@@ -13,9 +13,10 @@ black = "^25.12.0"
 psycopg2-binary = "^2.9.11"
 pydantic = "^2.12.5"
 asyncpg = "^0.31.0"
-openai = "^2.9.0"
 python-dotenv = "^1.2.1"
 aiogram = "^3.23.0"
+pydantic-settings = "^2.12.0"
+ollama = "^0.6.1"
 
 
 [build-system]
