@@ -21,7 +21,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 500))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", 0.1))
 
-DATA_DIR = BASE_DIR.parent / "data"
+DATA_DIR = BASE_DIR / "data"
 JSON_DATA_PATH = DATA_DIR / "videos.json"
 
 
