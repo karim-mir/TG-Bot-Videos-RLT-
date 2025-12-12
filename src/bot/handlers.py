@@ -432,12 +432,9 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     """Парсит естественный запрос и возвращает SQL и параметры."""
     query = query.lower().strip().rstrip('?')
 
-    # 1. Запросы с креатором и диапазоном дат
+    # 1. Запросы с креатором и диапазоном дат (САМЫЙ ВАЖНЫЙ СЛУЧАЙ)
     patterns_creator_dates = [
-        # Основной паттерн
         r'сколько видео (?:опубликовал|вышло у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
-        # Альтернативный паттерн
-        r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+).*с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?.*сколько видео',
     ]
 
     for pattern in patterns_creator_dates:
@@ -447,14 +444,12 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
             date_from_str = match.group(2).strip()
             date_to_str = match.group(3).strip()
 
-            # Очищаем дату от "включительно"
             date_to_str = date_to_str.replace('включительно', '').strip()
 
             date_from = parse_date(date_from_str)
             date_to = parse_date(date_to_str)
 
             if not date_to and date_to_str.isdigit() and date_from:
-                # Если дата - просто число (например, "5")
                 try:
                     day = int(date_to_str)
                     date_to = datetime(date_from.year, date_from.month, day)
@@ -462,8 +457,8 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
                     pass
 
             if date_from and date_to:
-                # ВАЖНО: стандартный запрос COUNT(*)
-                sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1 AND DATE(video_created_at) BETWEEN $2 AND $3"
+                # ВАЖНО: используем UTC для сравнения дат!
+                sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1 AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3"
                 return sql, {
                     'creator_id': creator_id,
                     'date_from': date_from.date(),
