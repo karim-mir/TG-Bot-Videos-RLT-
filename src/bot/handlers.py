@@ -1,7 +1,9 @@
 """
 Обработчики команд Telegram бота.
 """
-
+import re
+from datetime import datetime, timedelta
+from typing import Tuple, Optional
 import logging
 
 from aiogram import F, Router
@@ -382,10 +384,203 @@ async def cmd_daily_growth(message: Message):
         await message.answer("❌ Произошла ошибка. Попробуйте позже.")
 
 
-@router.message(F.text)
-async def handle_unknown(message: Message):
-    """Обработчик неизвестных сообщений."""
-    await message.answer(
-        "🤔 Я не понял ваш запрос.\n"
-        "Используйте /help чтобы увидеть список доступных команд."
-    )
+def parse_date(date_str: str) -> Optional[datetime]:
+    """Парсит дату из русского текста."""
+    try:
+        # Удаляем лишние пробелы и приводим к нижнему регистру
+        date_str = date_str.strip().lower()
+
+        # Паттерны для дат
+        patterns = [
+            # "28 ноября 2025"
+            (r'(\d{1,2})\s+(\w+)\s+(\d{4})', '%d %B %Y'),
+            # "28 ноября"
+            (r'(\d{1,2})\s+(\w+)', '%d %B'),
+            # "с 1 по 5 ноября 2025"
+            (r'с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})', 'range'),
+        ]
+
+        # Русские названия месяцев
+        months = {
+            'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
+            'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
+            'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+        }
+
+        # Пробуем распарсить диапазон дат
+        range_pattern = r'с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+        range_match = re.search(range_pattern, date_str)
+        if range_match:
+            day_from, day_to, month_ru, year = range_match.groups()
+            month = months.get(month_ru)
+            if month:
+                date_from = datetime(int(year), month, int(day_from))
+                date_to = datetime(int(year), month, int(day_to))
+                return (date_from, date_to)  # Возвращаем кортеж дат
+
+        # Пробуем распарсить одиночную дату
+        for pattern, fmt in patterns[:-1]:
+            match = re.search(pattern, date_str)
+            if match:
+                day = int(match.group(1))
+                month_ru = match.group(2)
+                month = months.get(month_ru)
+                if month:
+                    year = int(match.group(3)) if len(match.groups()) > 2 else datetime.now().year
+                    return datetime(year, month, day)
+
+        return None
+    except Exception:
+        return None
+
+
+def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
+    """Парсит естественный запрос и возвращает SQL и параметры."""
+    query = query.lower().strip()
+
+    # 1. "Сколько всего видео есть в системе?"
+    if any(phrase in query for phrase in ["сколько всего видео", "сколько видео в системе"]):
+        return "SELECT COUNT(*) FROM videos", {}
+
+    # 2. "Сколько видео набрало больше X просмотров?"
+    match = re.search(r'больше\s+(\d[\d\s]*)\s+просмотров', query)
+    if match:
+        views = int(match.group(1).replace(' ', '').replace(',', ''))
+        return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
+
+    # 3. "Сколько разных креаторов?"
+    if "сколько разных креаторов" in query:
+        return "SELECT COUNT(DISTINCT creator_id) FROM videos", {}
+
+    # 4. "На сколько просмотров выросли все видео [дата]?"
+    match = re.search(r'на сколько просмотров.*выросли все видео\s+(.+?)\??$', query)
+    if match:
+        date_str = match.group(1)
+        date = parse_date(date_str)
+        if isinstance(date, tuple):
+            # Диапазон дат
+            date_from, date_to = date
+            sql = """
+                SELECT SUM(delta_views_count) 
+                FROM video_snapshots 
+                WHERE DATE(created_at) BETWEEN $1 AND $2
+            """
+            return sql, {'date_from': date_from.date(), 'date_to': date_to.date()}
+        elif date:
+            # Одна дата
+            sql = "SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = $1"
+            return sql, {'date': date.date()}
+
+    # 5. "Сколько разных видео получали новые просмотры [дата]?"
+    match = re.search(r'сколько разных видео.*получали новые просмотры\s+(.+?)\??$', query)
+    if match:
+        date_str = match.group(1)
+        date = parse_date(date_str)
+        if date:
+            sql = "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = $1 AND delta_views_count > 0"
+            return sql, {'date': date.date()}
+
+    # 6. "Сколько видео у креатора с id ..."
+    match = re.search(r'креатора с id\s+(\S+)', query)
+    if match:
+        creator_id = match.group(1).strip()
+
+        # Проверяем, есть ли диапазон дат
+        date_match = re.search(r'с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?', query)
+        if date_match:
+            date_from_str = date_match.group(1)
+            date_to_str = date_match.group(2)
+            date_from = parse_date(date_from_str)
+            date_to = parse_date(date_to_str)
+
+            if date_from and date_to:
+                sql = """
+                    SELECT COUNT(*) 
+                    FROM videos 
+                    WHERE creator_id = $1 
+                    AND DATE(video_created_at) BETWEEN $2 AND $3
+                """
+                return sql, {'creator_id': creator_id, 'date_from': date_from.date(), 'date_to': date_to.date()}
+
+        # Без дат
+        sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1"
+        return sql, {'creator_id': creator_id}
+
+    # 7. Общий запрос количества видео с определенным условием
+    if "сколько видео" in query:
+        # Пробуем извлечь условие
+        if "больше" in query and "просмотров" in query:
+            match = re.search(r'больше\s+(\d[\d\s]*)\s+просмотров', query)
+            if match:
+                views = int(match.group(1).replace(' ', '').replace(',', ''))
+                return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
+
+    return None, None
+
+
+@router.message(F.text & ~F.text.startswith('/'))
+async def handle_natural_query(message: Message):
+    """Обработчик естественных запросов на русском языке."""
+    query = message.text.strip()
+
+    logger.info(f"Обрабатываем естественный запрос: {query}")
+
+    try:
+        sql, params = parse_natural_query(query)
+
+        if not sql:
+            await message.answer(
+                "🤔 Я не понял ваш запрос. Попробуйте сформулировать иначе.\n\n"
+                "Примеры вопросов:\n"
+                "• Сколько всего видео есть в системе?\n"
+                "• Сколько видео набрало больше 1000 просмотров?\n"
+                "• Сколько разных креаторов?\n"
+                "• На сколько просмотров выросли все видео 28 ноября 2025?\n"
+                "• Сколько разных видео получали новые просмотры 27 ноября 2025?\n"
+                "• Сколько видео у креатора с id abc123 вышло с 1 по 5 ноября 2025?"
+            )
+            return
+
+        # Выполняем запрос
+        if params:
+            param_values = list(params.values())
+            result = await db.execute_scalar(sql, *param_values)
+        else:
+            result = await db.execute_scalar(sql)
+
+        if result is None:
+            result = 0
+
+        # Форматируем ответ
+        if isinstance(result, (int, float)):
+            formatted_result = f"{result:,}"
+        else:
+            formatted_result = str(result)
+
+        response = f"📊 <b>Ответ:</b> {formatted_result}"
+        await message.answer(response)
+
+    except Exception as e:
+        logger.error(f"Ошибка при обработке запроса '{query}': {e}", exc_info=True)
+        await message.answer(
+            "❌ Произошла ошибка при обработке запроса.\n"
+            "Проверьте правильность формулировки и попробуйте снова."
+        )
+
+
+@router.message(F.text.startswith('/'))
+async def handle_unknown_command(message: Message):
+    """Обработчик неизвестных команд."""
+    known_commands = [
+        '/start', '/help', '/stats', '/top_videos',
+        '/top_creators', '/video_info', '/daily_growth'
+    ]
+
+    if message.text.split()[0] not in known_commands:
+        await message.answer(
+            "🤔 Неизвестная команда.\n"
+            "Используйте /help чтобы увидеть список доступных команд.\n\n"
+            "Или задайте вопрос на естественном языке, например:\n"
+            "• Сколько всего видео в системе?\n"
+            "• Сколько видео набрало больше 1000 просмотров?"
+        )
