@@ -1,12 +1,12 @@
-import sys
-import os
-import unittest
 import logging
-from unittest.mock import Mock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import os
+import sys
+import unittest
+from unittest.mock import Mock
 
 from src.core.llm_client import LLMClient
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 class TestLLMClient(unittest.TestCase):
@@ -15,7 +15,7 @@ class TestLLMClient(unittest.TestCase):
     def setUp(self):
         """Настройка перед каждым тестом."""
         # Отключаем логирование для тестов
-        logging.getLogger('src.core.llm_client').setLevel(logging.CRITICAL)
+        logging.getLogger("src.core.llm_client").setLevel(logging.CRITICAL)
 
         # Создаем экземпляр с пропуском проверки модели
         self.llm_client = LLMClient(skip_check=True)
@@ -68,6 +68,6 @@ class TestLLMClient(unittest.TestCase):
         self.assertEqual(sql, "SELECT COUNT(*) FROM videos")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     logging.basicConfig(level=logging.CRITICAL)
     unittest.main()

@@ -1,10 +1,10 @@
 import asyncio
-import sys
 import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import sys
 
 from src.core.database import db
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 async def test_database():
@@ -19,7 +19,6 @@ async def test_database():
         await db.create_tables()
         print("   ✅ Таблицы созданы")
 
-
         print("3. Проверка подключения...")
         result = await db.execute_scalar("SELECT 1")
         print(f"   ✅ Результат тестового запроса: {result}")
@@ -33,6 +32,7 @@ async def test_database():
         import traceback
 
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     asyncio.run(test_database())

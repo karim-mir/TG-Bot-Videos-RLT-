@@ -1,11 +1,8 @@
 import logging
-import json
-from sys import modules
-from typing import Dict, Any, Optional
+
 import ollama
 
 from src.config import LLM_CONFIG
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +29,6 @@ class LLMClient:
             except Exception as e:
                 logger.error(f"Failed to check model: {e}")
 
-
     def _check_model(self):
         """Проверяет, доступна ли модель"""
         try:
@@ -40,7 +36,9 @@ class LLMClient:
             available_models = [m["name"] for m in models["models"]]
 
             if self.model not in available_models:
-                logger.warning(f"Model {self.model} not found. Available: {available_models}")
+                logger.warning(
+                    f"Model {self.model} not found. Available: {available_models}"
+                )
                 logger.info(f"Trying to pull model {self.model}...")
                 self.client.pull(self.model)
                 logger.info(f"Model {self.model} pulled successfully")
@@ -65,13 +63,13 @@ class LLMClient:
                 options={
                     "temperature": self.temperature,
                     "num_predict": self.max_tokens,
-                }
+                },
             )
 
-            if hasattr(response, 'response'):
+            if hasattr(response, "response"):
                 response_text = response.response
-            elif isinstance(response, dict) and 'response' in response:
-                response_text = response['response']
+            elif isinstance(response, dict) and "response" in response:
+                response_text = response["response"]
             else:
                 response_text = str(response)
 
@@ -87,9 +85,9 @@ class LLMClient:
         """Строит промпт для генерации SQL"""
 
         schema_description = """
-        
+
         Database schema:
-        
+
         1. Table: videos
            Columns:
            - id (VARCHAR) - primary key
@@ -101,7 +99,7 @@ class LLMClient:
            - reports_count (INTEGER) - final reports count
            - created_at (TIMESTAMP) - when record was created
            - updated_at (TIMESTAMP) - when record was updated
-        
+
         2. Table: video_snapshots
            Columns:
            - id (VARCHAR) - primary key
@@ -116,7 +114,7 @@ class LLMClient:
            - delta_reports_count (INTEGER) - reports change from previous snapshot
            - created_at (TIMESTAMP) - snapshot time (hourly)
            - updated_at (TIMESTAMP) - when record was updated
-        
+
         Important notes:
         - Dates in queries should use DATE() function for date comparisons
         - Use CAST(... AS DATE) to extract date from timestamp
@@ -132,7 +130,8 @@ class LLMClient:
                 SQL: SELECT COUNT(*) FROM videos
 
                 User: "Сколько видео у креатора с id 123 вышло с 1 ноября 2025 по 5 ноября 2025 включительно?"
-                SQL: SELECT COUNT(*) FROM videos WHERE creator_id = '123' AND video_created_at >= '2025-11-01' AND video_created_at <= '2025-11-05'
+                SQL: SELECT COUNT(*) FROM videos WHERE creator_id = '123' AND video_created_at >= '2025-11-01'
+                AND video_created_at <= '2025-11-05'
 
                 User: "Сколько видео набрало больше 100000 просмотров за всё время?"
                 SQL: SELECT COUNT(*) FROM videos WHERE views_count > 100000
@@ -141,7 +140,8 @@ class LLMClient:
                 SQL: SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28'
 
                 User: "Сколько разных видео получали новые просмотры 27 ноября 2025?"
-                SQL: SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '2025-11-27' AND delta_views_count > 0
+                SQL: SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '2025-11-27'
+                AND delta_views_count > 0
                 """
 
         prompt = f"""{schema_description}
