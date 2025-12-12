@@ -595,13 +595,18 @@ async def handle_natural_query(message: Message):
         if result is None:
             result = 0
 
-        # Форматируем ответ
+        # ФОРМАТИРУЕМ ОТВЕТ: ТОЛЬКО ЧИСЛО БЕЗ ДОПОЛНИТЕЛЬНОГО ТЕКСТА
         if isinstance(result, (int, float)):
-            formatted_result = f"{result:,}"
+            # Если число целое - убираем десятичные знаки
+            if isinstance(result, int) or result.is_integer():
+                response = str(int(result))
+            else:
+                # Для дробных чисел оставляем 2 знака после запятой
+                response = f"{result:.2f}"
         else:
-            formatted_result = str(result)
+            response = str(result)
 
-        response = f"📊 <b>Ответ:</b> {formatted_result}"
+        # Отправляем ТОЛЬКО число
         await message.answer(response)
 
     except Exception as e:
