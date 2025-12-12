@@ -438,82 +438,126 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     """Парсит естественный запрос и возвращает SQL и параметры."""
     query = query.lower().strip()
 
-    # 1. "Сколько всего видео есть в системе?"
-    if any(phrase in query for phrase in ["сколько всего видео", "сколько видео в системе"]):
+    # Удаляем знаки вопроса в конце
+    query = query.rstrip('?')
+
+    # 1. "Сколько видео у креатора с id X набрали больше Y просмотров?"
+    # Паттерн: "Сколько видео у креатора с id [id] набрали больше [число] просмотров"
+    pattern_creator_views = r'сколько видео у креатора с id\s+([a-f0-9\-]+)\s+набрали больше\s+(\d[\d\s,]*)\s+просмотров'
+    match = re.search(pattern_creator_views, query)
+    if match:
+        creator_id = match.group(1).strip()
+        views_str = match.group(2).replace(' ', '').replace(',', '')
+        try:
+            views = int(views_str)
+            sql = """
+                SELECT COUNT(*) 
+                FROM videos 
+                WHERE creator_id = $1 
+                AND views_count > $2
+            """
+            return sql, {'creator_id': creator_id, 'views': views}
+        except:
+            pass
+
+    # 2. "Сколько всего видео есть в системе?"
+    if any(phrase in query for phrase in
+           ["сколько всего видео", "сколько видео есть в системе", "сколько видео в системе"]):
         return "SELECT COUNT(*) FROM videos", {}
 
-    # 2. "Сколько видео набрало больше X просмотров?"
-    match = re.search(r'больше\s+(\d[\d\s]*)\s+просмотров', query)
-    if match:
-        views = int(match.group(1).replace(' ', '').replace(',', ''))
-        return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
+    # 3. "Сколько видео набрало больше X просмотров?"
+    if "сколько видео" in query and "больше" in query and "просмотров" in query:
+        # Ищем числа в запросе
+        match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query)
+        if match:
+            views_str = match.group(1).replace(' ', '').replace(',', '')
+            try:
+                views = int(views_str)
+                return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
+            except:
+                pass
 
-    # 3. "Сколько разных креаторов?"
-    if "сколько разных креаторов" in query:
+    # 4. "Сколько разных креаторов?"
+    if "сколько разных креаторов" in query or "сколько различных креаторов" in query:
         return "SELECT COUNT(DISTINCT creator_id) FROM videos", {}
 
-    # 4. "На сколько просмотров выросли все видео [дата]?"
-    match = re.search(r'на сколько просмотров.*выросли все видео\s+(.+?)\??$', query)
-    if match:
-        date_str = match.group(1)
-        date = parse_date(date_str)
-        if isinstance(date, tuple):
-            # Диапазон дат
-            date_from, date_to = date
-            sql = """
-                SELECT SUM(delta_views_count) 
-                FROM video_snapshots 
-                WHERE DATE(created_at) BETWEEN $1 AND $2
-            """
-            return sql, {'date_from': date_from.date(), 'date_to': date_to.date()}
-        elif date:
-            # Одна дата
-            sql = "SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = $1"
-            return sql, {'date': date.date()}
+    # 5. "На сколько просмотров в сумме выросли все видео [дата]?"
+    patterns_growth = [
+        r'на сколько просмотров.*выросли все видео\s+(.+)',
+        r'на сколько просмотров в сумме выросли все видео\s+(.+)',
+        r'суммарный рост просмотров всех видео\s+(.+)'
+    ]
 
-    # 5. "Сколько разных видео получали новые просмотры [дата]?"
-    match = re.search(r'сколько разных видео.*получали новые просмотры\s+(.+?)\??$', query)
-    if match:
-        date_str = match.group(1)
+    for pattern in patterns_growth:
+        match = re.search(pattern, query)
+        if match:
+            date_str = match.group(1).strip()
+            date = parse_date(date_str)
+            if isinstance(date, tuple):
+                # Диапазон дат
+                date_from, date_to = date
+                sql = """
+                    SELECT COALESCE(SUM(delta_views_count), 0) 
+                    FROM video_snapshots 
+                    WHERE DATE(created_at) BETWEEN $1 AND $2
+                """
+                return sql, {'date_from': date_from.date(), 'date_to': date_to.date()}
+            elif date:
+                # Одна дата
+                sql = "SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = $1"
+                return sql, {'date': date.date()}
+
+    # 6. "Сколько разных видео получали новые просмотры [дата]?"
+    if "сколько разных видео получали новые просмотры" in query:
+        # Извлекаем дату после этой фразы
+        start_idx = query.find("получали новые просмотры") + len("получали новые просмотры")
+        date_str = query[start_idx:].strip()
         date = parse_date(date_str)
         if date:
             sql = "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = $1 AND delta_views_count > 0"
             return sql, {'date': date.date()}
 
-    # 6. "Сколько видео у креатора с id ..."
-    match = re.search(r'креатора с id\s+(\S+)', query)
+    # 7. "Сколько видео у креатора с id ..." (общий случай)
+    # Ищем pattern "креатора с id XXX" или "креатора id XXX"
+    match = re.search(r'креатора (?:с )?id\s+([a-f0-9\-]+)', query)
     if match:
         creator_id = match.group(1).strip()
 
-        # Проверяем, есть ли диапазон дат
-        date_match = re.search(r'с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?', query)
-        if date_match:
-            date_from_str = date_match.group(1)
-            date_to_str = date_match.group(2)
-            date_from = parse_date(date_from_str)
-            date_to = parse_date(date_to_str)
+        # Проверяем диапазон дат
+        if "с" in query and "по" in query:
+            date_match = re.search(r'с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?', query)
+            if date_match:
+                date_from_str = date_match.group(1)
+                date_to_str = date_match.group(2)
+                date_from = parse_date(date_from_str)
+                date_to = parse_date(date_to_str)
 
-            if date_from and date_to:
-                sql = """
-                    SELECT COUNT(*) 
-                    FROM videos 
-                    WHERE creator_id = $1 
-                    AND DATE(video_created_at) BETWEEN $2 AND $3
-                """
-                return sql, {'creator_id': creator_id, 'date_from': date_from.date(), 'date_to': date_to.date()}
+                if date_from and date_to:
+                    sql = """
+                        SELECT COUNT(*) 
+                        FROM videos 
+                        WHERE creator_id = $1 
+                        AND DATE(video_created_at) BETWEEN $2 AND $3
+                    """
+                    return sql, {
+                        'creator_id': creator_id,
+                        'date_from': date_from.date(),
+                        'date_to': date_to.date()
+                    }
 
-        # Без дат
         sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1"
         return sql, {'creator_id': creator_id}
 
-    # 7. Общий запрос количества видео с определенным условием
-    if "сколько видео" in query:
-        # Пробуем извлечь условие
-        if "больше" in query and "просмотров" in query:
-            match = re.search(r'больше\s+(\d[\d\s]*)\s+просмотров', query)
-            if match:
-                views = int(match.group(1).replace(' ', '').replace(',', ''))
+    # 8. "Сколько видео набрало больше X просмотров по итоговой статистике?"
+    if "по итоговой статистике" in query and "сколько видео" in query and "больше" in query and "просмотров" in query:
+        match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query)
+        if match:
+            views_str = match.group(1).replace(' ', '').replace(',', '')
+            try:
+                views = int(views_str)
                 return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
+            except:
+                pass
 
     return None, None
 
