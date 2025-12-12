@@ -435,20 +435,23 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     query = query.rstrip('?')
 
     # 1. "Сколько видео опубликовал/вышло у креатора с id X в период с Y по Z?"
-    # Паттерны для дат с креатором
+    # Более гибкий паттерн для различных формулировок
     patterns_creator_dates = [
-        # "Сколько видео опубликовал креатор с id X в период с Y по Z?"
-        r'сколько видео (?:опубликовал|вышло у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
-        # "Сколько видео у креатора с id X вышло с Y по Z?"
+        # Паттерн для текущего запроса
+        r'сколько видео (?:опубликовал|вышло у|у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
         r'сколько видео у креатора (?:с )?id\s+([a-f0-9\-]+)\s+вышло с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
+        r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+).*с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?.*сколько видео',
     ]
 
     for pattern in patterns_creator_dates:
-        match = re.search(pattern, query)
+        match = re.search(pattern, query, re.DOTALL)
         if match:
             creator_id = match.group(1).strip()
             date_from_str = match.group(2).strip()
             date_to_str = match.group(3).strip()
+
+            # Логируем распарсенные даты
+            print(f"Распарсенные даты: from='{date_from_str}', to='{date_to_str}'")
 
             date_from = parse_date(date_from_str)
             date_to = parse_date(date_to_str)
@@ -465,6 +468,8 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
                     'date_from': date_from.date(),
                     'date_to': date_to.date()
                 }
+            else:
+                print(f"Не удалось распарсить даты: from={date_from}, to={date_to}")
 
     # 2. "Сколько видео у креатора с id X набрали больше Y просмотров?"
     pattern_creator_views = r'сколько видео (?:у|у креатора с id|опубликовал креатор с id)\s+([a-f0-9\-]+)\s+(?:набрали|набрало) больше\s+(\d[\d\s,]*)\s+просмотров'
@@ -565,16 +570,13 @@ async def handle_natural_query(message: Message):
 
         if not sql:
             await message.answer(
-                "🤔 Я не понял ваш запрос. Попробуйте сформулировать иначе.\n\n"
-                "Примеры вопросов:\n"
-                "• Сколько всего видео есть в системе?\n"
-                "• Сколько видео набрало больше 1000 просмотров?\n"
-                "• Сколько разных креаторов?\n"
-                "• На сколько просмотров выросли все видео 28 ноября 2025?\n"
-                "• Сколько разных видео получали новые просмотры 27 ноября 2025?\n"
-                "• Сколько видео у креатора с id abc123 вышло с 1 по 5 ноября 2025?"
+                "🤔 Я не понял ваш запрос. Попробуйте сформулировать иначе."
             )
             return
+
+        # Логируем SQL и параметры
+        logger.info(f"SQL: {sql}")
+        logger.info(f"Params: {params}")
 
         # Выполняем запрос
         if params:
@@ -583,19 +585,14 @@ async def handle_natural_query(message: Message):
         else:
             result = await db.execute_scalar(sql)
 
+        logger.info(f"Результат запроса: {result}")
+
         if result is None:
             result = 0
 
         # ФОРМАТИРУЕМ ОТВЕТ: ТОЛЬКО ЧИСЛО БЕЗ ДОПОЛНИТЕЛЬНОГО ТЕКСТА
-        if isinstance(result, (int, float)):
-            # Если число целое - убираем десятичные знаки
-            if isinstance(result, int) or result.is_integer():
-                response = str(int(result))
-            else:
-                # Для дробных чисел оставляем 2 знака после запятой
-                response = f"{result:.2f}"
-        else:
-            response = str(result)
+        response = str(int(result)) if isinstance(result, (int, float)) and (
+                    isinstance(result, int) or result.is_integer()) else str(result)
 
         # Отправляем ТОЛЬКО число
         await message.answer(response)
@@ -603,8 +600,7 @@ async def handle_natural_query(message: Message):
     except Exception as e:
         logger.error(f"Ошибка при обработке запроса '{query}': {e}", exc_info=True)
         await message.answer(
-            "❌ Произошла ошибка при обработке запроса.\n"
-            "Проверьте правильность формулировки и попробуйте снова."
+            "❌ Произошла ошибка при обработке запроса."
         )
 
 
