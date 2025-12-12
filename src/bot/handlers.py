@@ -2,6 +2,7 @@
 Обработчики команд Telegram бота.
 """
 import re
+import textwrap
 from datetime import datetime, timedelta
 from typing import Tuple, Optional
 import logging
@@ -389,6 +390,12 @@ def parse_date(date_str: str) -> Optional[datetime]:
     try:
         date_str = date_str.strip().lower()
 
+        # Если строка уже в формате "2025-11-05", просто парсим
+        try:
+            return datetime.strptime(date_str, '%Y-%m-%d')
+        except:
+            pass
+
         # Русские названия месяцев (полные и сокращенные)
         months = {
             'января': 1, 'янв': 1, 'февраля': 2, 'фев': 2,
@@ -398,17 +405,6 @@ def parse_date(date_str: str) -> Optional[datetime]:
             'сентября': 9, 'сен': 9, 'октября': 10, 'окт': 10,
             'ноября': 11, 'ноя': 11, 'декабря': 12, 'дек': 12
         }
-
-        # Пробуем распарсить диапазон дат
-        range_pattern = r'с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
-        range_match = re.search(range_pattern, date_str)
-        if range_match:
-            day_from, day_to, month_ru, year = range_match.groups()
-            month = months.get(month_ru)
-            if month:
-                date_from = datetime(int(year), month, int(day_from))
-                date_to = datetime(int(year), month, int(day_to))
-                return (date_from, date_to)
 
         # Пробуем распарсить одиночную дату
         # Паттерн для "1 ноября 2025" или "1 ноября"
@@ -422,6 +418,11 @@ def parse_date(date_str: str) -> Optional[datetime]:
                 year = int(match.group(3)) if match.group(3) else datetime.now().year
                 return datetime(year, month, day)
 
+        # Если строка - просто число, возвращаем None
+        # (месяц и год будут добавлены позже из контекста)
+        if date_str.isdigit():
+            return None
+
         return None
     except Exception:
         return None
@@ -429,47 +430,49 @@ def parse_date(date_str: str) -> Optional[datetime]:
 
 def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     """Парсит естественный запрос и возвращает SQL и параметры."""
-    query = query.lower().strip()
+    query = query.lower().strip().rstrip('?')
 
-    # Удаляем знаки вопроса в конце
-    query = query.rstrip('?')
+    # Паттерн для запросов с креатором и диапазоном дат
+    pattern = r'сколько видео (?:опубликовал|вышло у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?'
 
-    # 1. "Сколько видео опубликовал/вышло у креатора с id X в период с Y по Z?"
-    # Более гибкий паттерн для различных формулировок
-    patterns_creator_dates = [
-        # Паттерн для текущего запроса
-        r'сколько видео (?:опубликовал|вышло у|у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
-        r'сколько видео у креатора (?:с )?id\s+([a-f0-9\-]+)\s+вышло с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
-        r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+).*с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?.*сколько видео',
-    ]
+    match = re.search(pattern, query, re.DOTALL)
+    if match:
+        creator_id = match.group(1).strip()
+        date_from_str = match.group(2).strip()
+        date_to_str = match.group(3).strip()
 
-    for pattern in patterns_creator_dates:
-        match = re.search(pattern, query, re.DOTALL)
-        if match:
-            creator_id = match.group(1).strip()
-            date_from_str = match.group(2).strip()
-            date_to_str = match.group(3).strip()
+        # Убираем слово "включительно" если оно попало в date_to_str
+        date_to_str = date_to_str.replace('включительно', '').strip()
 
-            # Логируем распарсенные даты
-            print(f"Распарсенные даты: from='{date_from_str}', to='{date_to_str}'")
+        # Сначала парсим начальную дату
+        date_from = parse_date(date_from_str)
+        if not date_from:
+            return None, None
 
-            date_from = parse_date(date_from_str)
-            date_to = parse_date(date_to_str)
+        # Парсим конечную дату, используя начальную как контекст
+        date_to = parse_date(date_to_str)
+        if not date_to:
+            # Если не удалось распарсить, возможно это просто число (день)
+            # Используем месяц и год из начальной даты
+            if date_to_str.isdigit():
+                try:
+                    day = int(date_to_str)
+                    date_to = datetime(date_from.year, date_from.month, day)
+                except:
+                    return None, None
 
-            if date_from and date_to:
-                sql = """
-                    SELECT COUNT(*) 
-                    FROM videos 
-                    WHERE creator_id = $1 
-                    AND DATE(video_created_at) BETWEEN $2 AND $3
-                """
-                return sql, {
-                    'creator_id': creator_id,
-                    'date_from': date_from.date(),
-                    'date_to': date_to.date()
-                }
-            else:
-                print(f"Не удалось распарсить даты: from={date_from}, to={date_to}")
+        if date_from and date_to:
+            # ИСПРАВЛЕННЫЙ SQL запрос - однострочный
+            sql = "SELECT COUNT(DISTINCT DATE(video_created_at)) FROM videos WHERE creator_id = $1 AND DATE(video_created_at) BETWEEN $2 AND $3"
+
+            return sql, {
+                'creator_id': creator_id,
+                'date_from': date_from.date(),
+                'date_to': date_to.date()
+            }
+        else:
+            print(f"Не удалось распарсить даты: from={date_from}, to={date_to}")
+            return None, None
 
     # 2. "Сколько видео у креатора с id X набрали больше Y просмотров?"
     pattern_creator_views = r'сколько видео (?:у|у креатора с id|опубликовал креатор с id)\s+([a-f0-9\-]+)\s+(?:набрали|набрало) больше\s+(\d[\d\s,]*)\s+просмотров'
