@@ -387,24 +387,16 @@ async def cmd_daily_growth(message: Message):
 def parse_date(date_str: str) -> Optional[datetime]:
     """Парсит дату из русского текста."""
     try:
-        # Удаляем лишние пробелы и приводим к нижнему регистру
         date_str = date_str.strip().lower()
 
-        # Паттерны для дат
-        patterns = [
-            # "28 ноября 2025"
-            (r'(\d{1,2})\s+(\w+)\s+(\d{4})', '%d %B %Y'),
-            # "28 ноября"
-            (r'(\d{1,2})\s+(\w+)', '%d %B'),
-            # "с 1 по 5 ноября 2025"
-            (r'с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})', 'range'),
-        ]
-
-        # Русские названия месяцев
+        # Русские названия месяцев (полные и сокращенные)
         months = {
-            'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
-            'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
-            'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+            'января': 1, 'янв': 1, 'февраля': 2, 'фев': 2,
+            'марта': 3, 'мар': 3, 'апреля': 4, 'апр': 4,
+            'мая': 5, 'май': 5, 'июня': 6, 'июн': 6,
+            'июля': 7, 'июл': 7, 'августа': 8, 'авг': 8,
+            'сентября': 9, 'сен': 9, 'октября': 10, 'окт': 10,
+            'ноября': 11, 'ноя': 11, 'декабря': 12, 'дек': 12
         }
 
         # Пробуем распарсить диапазон дат
@@ -416,18 +408,19 @@ def parse_date(date_str: str) -> Optional[datetime]:
             if month:
                 date_from = datetime(int(year), month, int(day_from))
                 date_to = datetime(int(year), month, int(day_to))
-                return (date_from, date_to)  # Возвращаем кортеж дат
+                return (date_from, date_to)
 
         # Пробуем распарсить одиночную дату
-        for pattern, fmt in patterns[:-1]:
-            match = re.search(pattern, date_str)
-            if match:
-                day = int(match.group(1))
-                month_ru = match.group(2)
-                month = months.get(month_ru)
-                if month:
-                    year = int(match.group(3)) if len(match.groups()) > 2 else datetime.now().year
-                    return datetime(year, month, day)
+        # Паттерн для "1 ноября 2025" или "1 ноября"
+        date_pattern = r'(\d{1,2})\s+(\w+)(?:\s+(\d{4}))?'
+        match = re.search(date_pattern, date_str)
+        if match:
+            day = int(match.group(1))
+            month_ru = match.group(2)
+            month = months.get(month_ru)
+            if month:
+                year = int(match.group(3)) if match.group(3) else datetime.now().year
+                return datetime(year, month, day)
 
         return None
     except Exception:
@@ -441,9 +434,40 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     # Удаляем знаки вопроса в конце
     query = query.rstrip('?')
 
-    # 1. "Сколько видео у креатора с id X набрали больше Y просмотров?"
-    # Паттерн: "Сколько видео у креатора с id [id] набрали больше [число] просмотров"
-    pattern_creator_views = r'сколько видео у креатора с id\s+([a-f0-9\-]+)\s+набрали больше\s+(\d[\d\s,]*)\s+просмотров'
+    # 1. "Сколько видео опубликовал/вышло у креатора с id X в период с Y по Z?"
+    # Паттерны для дат с креатором
+    patterns_creator_dates = [
+        # "Сколько видео опубликовал креатор с id X в период с Y по Z?"
+        r'сколько видео (?:опубликовал|вышло у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
+        # "Сколько видео у креатора с id X вышло с Y по Z?"
+        r'сколько видео у креатора (?:с )?id\s+([a-f0-9\-]+)\s+вышло с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
+    ]
+
+    for pattern in patterns_creator_dates:
+        match = re.search(pattern, query)
+        if match:
+            creator_id = match.group(1).strip()
+            date_from_str = match.group(2).strip()
+            date_to_str = match.group(3).strip()
+
+            date_from = parse_date(date_from_str)
+            date_to = parse_date(date_to_str)
+
+            if date_from and date_to:
+                sql = """
+                    SELECT COUNT(*) 
+                    FROM videos 
+                    WHERE creator_id = $1 
+                    AND DATE(video_created_at) BETWEEN $2 AND $3
+                """
+                return sql, {
+                    'creator_id': creator_id,
+                    'date_from': date_from.date(),
+                    'date_to': date_to.date()
+                }
+
+    # 2. "Сколько видео у креатора с id X набрали больше Y просмотров?"
+    pattern_creator_views = r'сколько видео (?:у|у креатора с id|опубликовал креатор с id)\s+([a-f0-9\-]+)\s+(?:набрали|набрало) больше\s+(\d[\d\s,]*)\s+просмотров'
     match = re.search(pattern_creator_views, query)
     if match:
         creator_id = match.group(1).strip()
@@ -460,12 +484,12 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
         except:
             pass
 
-    # 2. "Сколько всего видео есть в системе?"
+    # 3. "Сколько всего видео есть в системе?"
     if any(phrase in query for phrase in
            ["сколько всего видео", "сколько видео есть в системе", "сколько видео в системе"]):
         return "SELECT COUNT(*) FROM videos", {}
 
-    # 3. "Сколько видео набрало больше X просмотров?"
+    # 4. "Сколько видео набрало больше X просмотров?"
     if "сколько видео" in query and "больше" in query and "просмотров" in query:
         # Ищем числа в запросе
         match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query)
@@ -477,11 +501,11 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
             except:
                 pass
 
-    # 4. "Сколько разных креаторов?"
+    # 5. "Сколько разных креаторов?"
     if "сколько разных креаторов" in query or "сколько различных креаторов" in query:
         return "SELECT COUNT(DISTINCT creator_id) FROM videos", {}
 
-    # 5. "На сколько просмотров в сумме выросли все видео [дата]?"
+    # 6. "На сколько просмотров в сумме выросли все видео [дата]?"
     patterns_growth = [
         r'на сколько просмотров.*выросли все видео\s+(.+)',
         r'на сколько просмотров в сумме выросли все видео\s+(.+)',
@@ -507,7 +531,7 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
                 sql = "SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = $1"
                 return sql, {'date': date.date()}
 
-    # 6. "Сколько разных видео получали новые просмотры [дата]?"
+    # 7. "Сколько разных видео получали новые просмотры [дата]?"
     if "сколько разных видео получали новые просмотры" in query:
         # Извлекаем дату после этой фразы
         start_idx = query.find("получали новые просмотры") + len("получали новые просмотры")
@@ -517,47 +541,14 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
             sql = "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = $1 AND delta_views_count > 0"
             return sql, {'date': date.date()}
 
-    # 7. "Сколько видео у креатора с id ..." (общий случай)
-    # Ищем pattern "креатора с id XXX" или "креатора id XXX"
-    match = re.search(r'креатора (?:с )?id\s+([a-f0-9\-]+)', query)
-    if match:
+    # 8. Общий паттерн для креатора без условий по просмотрам
+    match = re.search(r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)', query)
+    if match and "сколько видео" in query:
         creator_id = match.group(1).strip()
 
-        # Проверяем диапазон дат
-        if "с" in query and "по" in query:
-            date_match = re.search(r'с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?', query)
-            if date_match:
-                date_from_str = date_match.group(1)
-                date_to_str = date_match.group(2)
-                date_from = parse_date(date_from_str)
-                date_to = parse_date(date_to_str)
-
-                if date_from and date_to:
-                    sql = """
-                        SELECT COUNT(*) 
-                        FROM videos 
-                        WHERE creator_id = $1 
-                        AND DATE(video_created_at) BETWEEN $2 AND $3
-                    """
-                    return sql, {
-                        'creator_id': creator_id,
-                        'date_from': date_from.date(),
-                        'date_to': date_to.date()
-                    }
-
+        # Без дополнительных условий
         sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1"
         return sql, {'creator_id': creator_id}
-
-    # 8. "Сколько видео набрало больше X просмотров по итоговой статистике?"
-    if "по итоговой статистике" in query and "сколько видео" in query and "больше" in query and "просмотров" in query:
-        match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query)
-        if match:
-            views_str = match.group(1).replace(' ', '').replace(',', '')
-            try:
-                views = int(views_str)
-                return "SELECT COUNT(*) FROM videos WHERE views_count > $1", {'views': views}
-            except:
-                pass
 
     return None, None
 
