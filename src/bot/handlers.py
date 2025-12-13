@@ -14,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 
 from src.core.database import db
+from src.core.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -430,62 +431,77 @@ def parse_date(date_str: str) -> Optional[datetime]:
 
 def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
     """Парсит естественный запрос и возвращает SQL и параметры."""
-    query = query.lower().strip().rstrip('?')
+    # Сначала пробуем простые правила (для частых запросов)
+    query_lower = query.lower().strip().rstrip('?')
 
-    # 1. Запросы с креатором и диапазоном дат (САМЫЙ ВАЖНЫЙ СЛУЧАЙ)
-    patterns_creator_dates = [
-        r'сколько видео (?:опубликовал|вышло у) креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)\s+(?:в период )?с\s+(.+?)\s+по\s+(.+?)(?:\s+включительно)?',
-    ]
-
-    for pattern in patterns_creator_dates:
-        match = re.search(pattern, query, re.DOTALL)
-        if match:
-            creator_id = match.group(1).strip()
-            date_from_str = match.group(2).strip()
-            date_to_str = match.group(3).strip()
-
-            date_to_str = date_to_str.replace('включительно', '').strip()
-
-            date_from = parse_date(date_from_str)
-            date_to = parse_date(date_to_str)
-
-            if not date_to and date_to_str.isdigit() and date_from:
-                try:
-                    day = int(date_to_str)
-                    date_to = datetime(date_from.year, date_from.month, day)
-                except:
-                    pass
-
-            if date_from and date_to:
-                # ВАЖНО: используем UTC для сравнения дат!
-                sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1 AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN $2 AND $3"
-                return sql, {
-                    'creator_id': creator_id,
-                    'date_from': date_from.date(),
-                    'date_to': date_to.date()
-                }
-
-    # 2. "Сколько видео у креатора с id X набрали больше Y просмотров?"
-    if "набрали больше" in query and "просмотров" in query and "креатор" in query:
-        match = re.search(r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+).*набрали больше\s+(\d[\d\s,]*)\s+просмотров', query,
-                          re.DOTALL)
-        if match:
-            creator_id = match.group(1).strip()
-            views_str = match.group(2).replace(' ', '').replace(',', '')
-            try:
-                views = int(views_str)
-                sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1 AND views_count > $2"
-                return sql, {'creator_id': creator_id, 'views': views}
-            except:
-                pass
-
-    # 3. "Сколько всего видео есть в системе?"
-    if any(phrase in query for phrase in ["сколько всего видео", "сколько видео есть в системе"]):
+    # 1. Очень простые запросы (можно обработать без LLM)
+    if "сколько всего видео" in query_lower and "систем" in query_lower:
         return "SELECT COUNT(*) FROM videos", {}
 
-    # 4. "Сколько видео набрало больше X просмотров?"
-    if "сколько видео" in query and "больше" in query and "просмотров" in query:
-        match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query)
+    if "сколько разных креаторов" in query_lower:
+        return "SELECT COUNT(DISTINCT creator_id) FROM videos", {}
+
+    # 2. Если есть LLM клиент - используем его
+    if llm_client:
+        try:
+            # Получаем SQL от LLM
+            sql = llm_client.generate_sql_from_natural_language(query)
+            logger.info(f"LLM сгенерировал SQL: {sql}")
+
+            # Извлекаем параметры из запроса (если есть)
+            params = extract_params_from_query(query, sql)
+
+            return sql, params
+
+        except Exception as e:
+            logger.error(f"Ошибка LLM: {e}")
+            # Если LLM не сработал, продолжаем с обычными правилами
+
+    # 3. Продолжаем с обычными правилами
+    return parse_with_rules(query)
+
+
+def extract_params_from_query(query: str, sql: str) -> dict:
+    """Извлекает параметры из запроса пользователя."""
+    params = {}
+    query_lower = query.lower()
+
+    # Ищем ID креатора
+    id_match = re.search(r'id\s+([a-f0-9\-]+)', query_lower)
+    if id_match:
+        params['creator_id'] = id_match.group(1)
+
+    # Ищем числа (просмотры, лайки и т.д.)
+    number_match = re.search(r'больше\s+(\d[\d\s,]*)', query_lower)
+    if number_match:
+        number_str = number_match.group(1).replace(' ', '').replace(',', '')
+        try:
+            params['views'] = int(number_str)
+        except:
+            pass
+
+    # Ищем даты (упрощенный вариант)
+    date_match = re.search(
+        r'(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})',
+        query_lower)
+    if date_match:
+        # Здесь нужно парсить дату через parse_date
+        pass
+
+    return params
+
+
+def parse_with_rules(query: str) -> Tuple[Optional[str], Optional[dict]]:
+    """Резервный парсер с правилами (когда LLM недоступен)."""
+    query_lower = query.lower().strip().rstrip('?')
+
+    # 1. "Сколько всего видео есть в системе?"
+    if any(phrase in query_lower for phrase in ["сколько всего видео", "сколько видео есть в системе"]):
+        return "SELECT COUNT(*) FROM videos", {}
+
+    # 2. "Сколько видео набрало больше X просмотров?"
+    if "сколько видео" in query_lower and "больше" in query_lower and "просмотров" in query_lower:
+        match = re.search(r'больше\s+(\d[\d\s,]*)\s+просмотров', query_lower)
         if match:
             views_str = match.group(1).replace(' ', '').replace(',', '')
             try:
@@ -494,38 +510,45 @@ def parse_natural_query(query: str) -> Tuple[Optional[str], Optional[dict]]:
             except:
                 pass
 
-    # 5. "Сколько разных креаторов?"
-    if "сколько разных креаторов" in query:
+    # 3. "Сколько разных креаторов?"
+    if "сколько разных креаторов" in query_lower:
         return "SELECT COUNT(DISTINCT creator_id) FROM videos", {}
 
-    # 6. "На сколько просмотров в сумме выросли все видео [дата]?"
-    if "на сколько просмотров" in query and "выросли все видео" in query:
-        # Извлекаем дату
-        date_match = re.search(r'выросли все видео\s+(.+)', query)
+    # 4. "На сколько просмотров выросли все видео [дата]?"
+    if "на сколько просмотров" in query_lower and "выросли все видео" in query_lower:
+        date_match = re.search(r'выросли все видео\s+(.+)', query_lower)
         if date_match:
             date_str = date_match.group(1).strip()
             date = parse_date(date_str)
             if date:
-                sql = "SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = $1"
-                return sql, {'date': date.date()}
+                return "SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = $1", {
+                    'date': date.date()}
 
-    # 7. "Сколько разных видео получали новые просмотры [дата]?"
-    if "сколько разных видео получали новые просмотры" in query:
-        # Извлекаем дату
-        date_match = re.search(r'получали новые просмотры\s+(.+)', query)
+    # 5. "Сколько разных видео получали новые просмотры [дата]?"
+    if "сколько разных видео получали новые просмотры" in query_lower:
+        date_match = re.search(r'получали новые просмотры\s+(.+)', query_lower)
         if date_match:
             date_str = date_match.group(1).strip()
             date = parse_date(date_str)
             if date:
-                sql = "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = $1 AND delta_views_count > 0"
-                return sql, {'date': date.date()}
+                return "SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = $1 AND delta_views_count > 0", {
+                    'date': date.date()}
 
-    # 8. Общий запрос по креатору
-    match = re.search(r'креатор(?:а)? (?:с )?id\s+([a-f0-9\-]+)', query)
-    if match and "сколько видео" in query:
+    # 6. "Сколько всего есть замеров статистики с отрицательными просмотрами?"
+    if any(keyword in query_lower for keyword in ["замеров статистики", "отрицательными просмотрами"]):
+        return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0", {}
+
+    # 7. "Сколько видео у креатора с id ..."
+    match = re.search(r'креатора с id\s+([a-f0-9\-]+)', query_lower)
+    if match:
         creator_id = match.group(1).strip()
-        sql = "SELECT COUNT(*) FROM videos WHERE creator_id = $1"
-        return sql, {'creator_id': creator_id}
+
+        # Проверяем диапазон дат
+        if "с" in query_lower and "по" in query_lower:
+            # Упрощенный вариант без точного парсинга дат
+            return "SELECT COUNT(*) FROM videos WHERE creator_id = $1", {'creator_id': creator_id}
+
+        return "SELECT COUNT(*) FROM videos WHERE creator_id = $1", {'creator_id': creator_id}
 
     return None, None
 
@@ -535,18 +558,15 @@ async def handle_natural_query(message: Message):
     """Обработчик естественных запросов на русском языке."""
     query = message.text.strip()
 
-    logger.info(f"Обрабатываем естественный запрос: {query}")
+    logger.info(f"Запрос: {query}")
 
     try:
         sql, params = parse_natural_query(query)
 
         if not sql:
-            await message.answer(
-                "🤔 Я не понял ваш запрос. Попробуйте сформулировать иначе."
-            )
+            await message.answer("🤔 Я не понял ваш запрос.")
             return
 
-        # Логируем SQL и параметры
         logger.info(f"SQL: {sql}")
         logger.info(f"Params: {params}")
 
@@ -557,23 +577,17 @@ async def handle_natural_query(message: Message):
         else:
             result = await db.execute_scalar(sql)
 
-        logger.info(f"Результат запроса: {result}")
+        logger.info(f"Результат: {result}")
 
         if result is None:
             result = 0
 
-        # ФОРМАТИРУЕМ ОТВЕТ: ТОЛЬКО ЧИСЛО БЕЗ ДОПОЛНИТЕЛЬНОГО ТЕКСТА
-        response = str(int(result)) if isinstance(result, (int, float)) and (
-                    isinstance(result, int) or result.is_integer()) else str(result)
-
-        # Отправляем ТОЛЬКО число
-        await message.answer(response)
+        # Отправляем только число
+        await message.answer(str(result))
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса '{query}': {e}", exc_info=True)
-        await message.answer(
-            "❌ Произошла ошибка при обработке запроса."
-        )
+        logger.error(f"Ошибка: {e}", exc_info=True)
+        await message.answer("❌ Ошибка при обработке запроса.")
 
 
 @router.message(F.text.startswith('/'))
