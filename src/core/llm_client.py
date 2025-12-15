@@ -88,29 +88,35 @@ class LLMClient:
         """Строит точный промпт для Gemma3:4b."""
 
         prompt = f"""
-    Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом, с точкой с запятой в конце.
+    Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом с точкой с запятой в конце.
 
     Структура базы данных:
-    1. Таблица videos содержит все видео с финальной статистикой
-       - creator_id (идентификатор креатора)
-       - video_created_at (дата и время публикации видео - TIMESTAMPTZ с часовым поясом)
-       - views_count (общее количество просмотров)
+    1. Таблица videos (финальная статистика видео):
+       - id, creator_id, views_count, video_created_at
+       - Используй для: количество видео, просмотров, дат публикации
 
-    ВАЖНЫЕ ПРАВИЛА:
-    1. Всегда используй (video_created_at AT TIME ZONE 'UTC')::date для сравнения дат
-    2. Для диапазона дат используй BETWEEN
-    3. Для дат используй формат 'YYYY-MM-DD'
-    4. Всегда добавляй точку с запятой ; в конце SQL
+    2. Таблица video_snapshots (почасовые изменения):
+       - video_id, delta_views_count, delta_likes_count, created_at
+       - Используй для: дельты просмотров, отрицательные значения, изменения по часам
+
+    ВНИМАНИЕ:
+    - Для "замеров статистики", "отрицательных просмотров", "дельт" используй video_snapshots
+    - Для "сколько видео", "креаторов", "даты публикации" используй videos
+    - Для дат публикации видео используй: (video_created_at AT TIME ZONE 'UTC')::date
+    - Для дат снапшотов используй: DATE(created_at)
 
     Примеры:
-    Вопрос: Сколько видео опубликовал креатор с id abc123 в период с 1 ноября 2025 по 5 ноября 2025 включительно?
-    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-11-01' AND '2025-11-05';
+    Вопрос: Сколько всего замеров статистики с отрицательными просмотрами?
+    SQL: SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0;
 
-    Вопрос: Сколько видео у креатора с id abc123 набрали больше 5000 просмотров?
-    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123' AND views_count > 5000;
+    Вопрос: Сколько видео опубликовал креатор X в период с 1 по 5 ноября?
+    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'X' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-11-01' AND '2025-11-05';
 
-    Вопрос: Сколько видео опубликовано в ноябре 2025 года?
-    SQL: SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM (video_created_at AT TIME ZONE 'UTC')) = 2025 AND EXTRACT(MONTH FROM (video_created_at AT TIME ZONE 'UTC')) = 11;
+    Вопрос: Сколько всего видео?
+    SQL: SELECT COUNT(*) FROM videos;
+
+    Вопрос: На сколько просмотров выросли все видео 28 ноября?
+    SQL: SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28';
 
     Вопрос: {user_query}
     SQL:"""
