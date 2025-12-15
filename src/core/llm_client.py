@@ -1,4 +1,6 @@
+python
 import logging
+import re
 
 import ollama
 
@@ -60,90 +62,97 @@ class LLMClient:
                 model=self.model,
                 prompt=prompt,
                 options={
-                    "temperature": self.temperature,
-                    "num_predict": self.max_tokens,
+                    "temperature": 0.1,  # СНИЖАЕМ температуру для точности
+                    "num_predict": 100,  # Уменьшаем длину ответа
+                    "stop": ["\n", ";", "```", "Вопрос:"]  # Стоп-слова
                 }
             )
 
             # Извлекаем SQL
             sql = self._extract_sql_from_response(response)
 
-            # Если SQL не валиден, используем fallback
+            # Валидируем и исправляем
+            sql = self._validate_and_fix_sql(sql, user_query)
+
             if not self._validate_sql(sql):
                 logger.warning(f"Невалидный SQL, используем fallback: {sql}")
                 return self._fallback_sql_for_query(user_query)
 
+            logger.info(f"Сгенерирован SQL: {sql}")
             return sql
 
         except Exception as e:
             logger.error(f"Ошибка генерации SQL: {e}")
             return self._fallback_sql_for_query(user_query)
 
-    def _fallback_sql_for_query(self, user_query: str) -> str:
-        """Резервные SQL на основе запроса."""
-        query_lower = user_query.lower()
+    def _build_enhanced_prompt(self, user_query: str) -> str:
+        """Строит простой промпт для Gemma3:4b."""
 
-        # Сопоставление запросов с SQL
-        fallback_rules = [
-            (["сколько всего видео", "видео есть в системе"],
-             "SELECT COUNT(*) FROM videos"),
+        prompt = f"""
+Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом.
 
-            (["сколько разных креаторов", "сколько различных креаторов"],
-             "SELECT COUNT(DISTINCT creator_id) FROM videos"),
+Таблицы:
+1. videos (id, creator_id, views_count, likes_count, comments_count, reports_count, video_created_at)
+2. video_snapshots (video_id, views_count, likes_count, delta_views_count, delta_likes_count, created_at)
 
-            (["отрицательным", "отрицательные", "уменьшилось", "стало меньше", "замеров статистики"],
-             "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"),
+Примеры:
+Вопрос: Сколько всего видео?
+SQL: SELECT COUNT(*) FROM videos
 
-            (["больше", "просмотров"],
-             lambda: self._extract_views_query(query_lower)),
+Вопрос: Сколько видео с просмотрами больше 10000?
+SQL: SELECT COUNT(*) FROM videos WHERE views_count > 10000
 
-            (["креатора с id", "креатор id"],
-             lambda: self._extract_creator_query(query_lower)),
+Вопрос: Сколько видео у креатора abc123?
+SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123'
 
-            (["сумме выросли", "выросли все видео"],
-             lambda: self._extract_growth_query(query_lower)),
-        ]
+Вопрос: Сумма просмотров всех видео?
+SQL: SELECT SUM(views_count) FROM videos
 
-        for keywords, sql_generator in fallback_rules:
-            if any(keyword in query_lower for keyword in keywords if isinstance(keywords, list)):
-                if callable(sql_generator):
-                    return sql_generator()
-                return sql_generator
+Вопрос: Дельты просмотров за 2025-11-26?
+SQL: SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = '2025-11-26'
 
-        return "SELECT COUNT(*) FROM videos"
+Вопрос: {user_query}
+SQL:"""
 
-    def _extract_views_query(self, query_lower: str) -> str:
-        """Извлекает запрос с условием по просмотрам."""
-        import re
-        match = re.search(r'больше\s+(\d[\d\s,]*)', query_lower)
-        if match:
-            num = match.group(1).replace(' ', '').replace(',', '')
-            return f"SELECT COUNT(*) FROM videos WHERE views_count > {num}"
-        return "SELECT COUNT(*) FROM videos WHERE views_count > 1000"
+        return prompt.strip()
 
-    def _extract_creator_query(self, query_lower: str) -> str:
-        """Извлекает запрос по креатору."""
-        import re
-        # Ищем ID креатора
-        id_match = re.search(r'id\s+([a-f0-9\-]+)', query_lower)
-        if id_match:
-            creator_id = id_match.group(1)
+    def _validate_and_fix_sql(self, sql: str, user_query: str) -> str:
+        """Валидирует и исправляет SQL для Gemma."""
+        if not sql:
+            return self._fallback_sql_for_query(user_query)
 
-            # Ищем диапазон дат
-            if "с" in query_lower and "по" in query_lower:
-                date_match = re.search(r'с\s+(\d{1,2})\s+(.+?)\s+по\s+(\d{1,2})\s+(.+?)\s+(\d{4})', query_lower)
-                if date_match:
-                    # Упрощенный вариант
-                    return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
+        sql = sql.strip()
 
-            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
+        # Если SQL слишком длинный или содержит лишнее
+        if '\n' in sql and sql.count('\n') > 3:
+            # Берем только первую строку, похожую на SQL
+            lines = sql.split('\n')
+            for line in lines:
+                if line.upper().startswith('SELECT'):
+                    sql = line.strip()
+                    break
 
-        return "SELECT COUNT(*) FROM videos"
+        # Очищаем от комментариев
+        if '--' in sql:
+            sql = sql.split('--')[0].strip()
 
-    def _extract_growth_query(self, query_lower: str) -> str:
-        """Извлекает запрос о росте просмотров."""
-        # Упрощенный вариант
-        return "SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots"
+        # Добавляем FROM если его нет
+        if 'SELECT' in sql.upper() and 'FROM' not in sql.upper():
+            # Пробуем исправить простые случаи
+            if 'videos' in sql.lower() and 'creator_id' in sql.lower():
+                # Пример: SELECT COUNT(*) WHERE creator_id = 'id'
+                count_match = re.search(r'SELECT\s+(.+?)\s+WHERE', sql, re.IGNORECASE)
+                if count_match:
+                    select_part = count_match.group(1)
+                    where_part = sql.split('WHERE', 1)[1]
+                    sql = f"SELECT {select_part} FROM videos WHERE {where_part}"
+
+        # Исправляем таблицу
+        if 'video_snapshots' in sql.lower() and 'creator_id' in sql.lower():
+            # В snapshots нет creator_id, нужно через JOIN
+            sql = sql.replace('video_snapshots', 'videos')
+
+        return sql
 
     def _validate_sql(self, sql: str) -> bool:
         """Проверяет валидность SQL."""
@@ -166,109 +175,70 @@ class LLMClient:
         if "FROM" not in sql_upper:
             return False
 
+        # Проверяем наличие таблиц
+        valid_tables = ["VIDEOS", "VIDEO_SNAPSHOTS"]
+        from_index = sql_upper.find("FROM")
+        if from_index != -1:
+            table_part = sql_upper[from_index + 4:].strip().split()[0]
+            if table_part not in valid_tables:
+                logger.warning(f"Неизвестная таблица: {table_part}")
+                return False
+
         return True
 
-    def _build_enhanced_prompt(self, user_query: str) -> str:
-        """Строит промпт для генерации SQL (оптимизирован для Gemma)."""
+    def _fallback_sql_for_query(self, user_query: str) -> str:
+        """Улучшенные fallback правила."""
+        query_lower = user_query.lower()
 
-        schema_description = """
-        PostgreSQL database schema:
+        # Извлекаем ID креатора и число заранее
+        creator_id = self._extract_creator_id(query_lower)
+        number = self._extract_number(query_lower)
 
-        TABLE videos:
-        - id (VARCHAR) - video ID
-        - creator_id (VARCHAR) - creator ID  
-        - video_created_at (TIMESTAMPTZ) - video publication datetime
-        - views_count (INTEGER) - total views
-        - likes_count (INTEGER) - total likes
-        - comments_count (INTEGER) - total comments
-        - reports_count (INTEGER) - total reports
-        - created_at (TIMESTAMPTZ) - record creation
-        - updated_at (TIMESTAMPTZ) - record update
+        fallback_rules = [
+            # Креаторы
+            (["креатора", "создателя", "creator"],
+             f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'" if creator_id else None),
 
-        TABLE video_snapshots:
-        - id (VARCHAR) - snapshot ID
-        - video_id (VARCHAR) - references videos.id
-        - views_count (INTEGER) - views at snapshot time
-        - likes_count (INTEGER) - likes at snapshot time  
-        - comments_count (INTEGER) - comments at snapshot time
-        - reports_count (INTEGER) - reports at snapshot time
-        - delta_views_count (INTEGER) - views change from previous hour
-        - delta_likes_count (INTEGER) - likes change from previous hour
-        - delta_comments_count (INTEGER) - comments change from previous hour
-        - delta_reports_count (INTEGER) - reports change from previous hour
-        - created_at (TIMESTAMPTZ) - snapshot timestamp (hourly)
-        - updated_at (TIMESTAMPTZ) - record update
+            # Просмотры
+            (["больше", "больш", "превысил", "превысило", "набрали"],
+             f"SELECT COUNT(*) FROM videos WHERE views_count > {number}"),
 
-        IMPORTANT:
-        - Use DATE() for date comparisons
-        - Use AT TIME ZONE 'UTC' for timezone handling
-        - delta_*_count can be negative
-        - Return ONLY one number in result
-        """
+            # Лайки
+            (["лайк", "лайков", "likes"],
+             f"SELECT SUM(likes_count) FROM videos"),
 
-        # Примеры запросов на русском с правильными SQL
-        examples = """
-        User Query: "Сколько всего видео есть в системе?"
-        SQL: SELECT COUNT(*) FROM videos
+            # Комментарии
+            (["комментар", "comments"],
+             f"SELECT SUM(comments_count) FROM videos"),
 
-        User Query: "Сколько видео набрало больше 100000 просмотров?"
-        SQL: SELECT COUNT(*) FROM videos WHERE views_count > 100000
+            # Видео всего
+            (["сколько всего видео", "видео есть", "всего видео"],
+             "SELECT COUNT(*) FROM videos"),
 
-        User Query: "Сколько видео у креатора с id abc123 вышло с 1 ноября 2025 по 5 ноября 2025 включительно?"
-        SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123' AND DATE(video_created_at) BETWEEN '2025-11-01' AND '2025-11-05'
+            # Дельты/изменения
+            (["дельта", "изменил", "вырос", "увеличил", "рост"],
+             "SELECT SUM(delta_views_count) FROM video_snapshots WHERE delta_views_count > 0"),
 
-        User Query: "На сколько просмотров в сумме выросли все видео 28 ноября 2025?"
-        SQL: SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28'
+            # Отрицательные
+            (["отрицательн", "уменьшил", "снизил", "упал"],
+             "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"),
 
-        User Query: "Сколько разных видео получали новые просмотры 27 ноября 2025?"
-        SQL: SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '2025-11-27' AND delta_views_count > 0
+            # Уникальные креаторы
+            (["разных креатор", "уникальн", "различн"],
+             "SELECT COUNT(DISTINCT creator_id) FROM videos"),
+        ]
 
-        User Query: "Сколько всего есть замеров статистики с отрицательными просмотрами?"
-        SQL: SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0
+        for keywords, sql_template in fallback_rules:
+            if any(keyword in query_lower for keyword in keywords):
+                if sql_template:
+                    # Проверяем, что SQL валиден
+                    if 'creator_id' in sql_template and "'" in sql_template and "''" not in sql_template:
+                        return sql_template
+                    elif sql_template.startswith("SELECT"):
+                        return sql_template
 
-        User Query: "Сколько разных креаторов есть в системе?"
-        SQL: SELECT COUNT(DISTINCT creator_id) FROM videos
-
-        User Query: "Сколько видео опубликовано в ноябре 2025 года?"
-        SQL: SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11
-
-        User Query: "Среднее количество просмотров на видео?"
-        SQL: SELECT AVG(views_count) FROM videos
-
-        User Query: "Сумма всех просмотров по всем видео?"
-        SQL: SELECT SUM(views_count) FROM videos
-        """
-
-        instructions = """
-        INSTRUCTIONS:
-        1. Generate ONLY the SQL query, no explanations
-        2. Use PostgreSQL syntax
-        3. Query must return exactly ONE number
-        4. Use actual values from the question (don't use $1, $2 parameters)
-        5. For dates use format 'YYYY-MM-DD'
-        6. Use BETWEEN for date ranges
-        7. Use COALESCE to handle NULL values
-        8. For text values use single quotes: 'value'
-        9. Use Russian month names: января, февраля, марта, etc.
-        10. Pay attention to negative conditions: "отрицательные" = negative, "меньше" = less than
-
-        IMPORTANT: Return ONLY the SQL query, nothing else.
-        """
-
-        prompt = f"""You are a PostgreSQL expert. Convert the Russian user query to a SQL query.
-
-    {schema_description}
-
-    {examples}
-
-    {instructions}
-
-    User Query (in Russian): "{user_query}"
-
-    SQL Query:
-    """
-
-        return prompt
+        # Дефолтный запрос
+        return "SELECT COUNT(*) FROM videos"
 
     def _extract_sql_from_response(self, response) -> str:
         """Извлекает SQL запрос из ответа модели."""
@@ -307,13 +277,13 @@ class LLMClient:
             # Проверяем, что это SQL
             if not self._looks_like_sql(response_text):
                 logger.warning(f"Ответ не похож на SQL: {response_text}")
-                return self._fallback_sql_for_query("")
+                return ""
 
             return response_text
 
         except Exception as e:
             logger.error(f"Ошибка извлечения SQL: {e}")
-            return "SELECT COUNT(*) FROM videos"
+            return ""
 
     def _looks_like_sql(self, text: str) -> bool:
         """Проверяет, похож ли текст на SQL запрос."""
@@ -333,6 +303,53 @@ class LLMClient:
             return False
 
         return True
+
+    def _extract_creator_id(self, query_lower: str) -> str:
+        """Извлекает ID креатора из запроса."""
+        # Ищем UUID (с дефисами)
+        uuid_pattern = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+        uuid_match = re.search(uuid_pattern, query_lower)
+        if uuid_match:
+            return uuid_match.group(0)
+
+        # Ищем короткий ID (32 символа без дефисов)
+        short_id_pattern = r'[a-f0-9]{32}'
+        short_id_match = re.search(short_id_pattern, query_lower)
+        if short_id_match:
+            return short_id_match.group(0)
+
+        # Ищем после "id "
+        id_match = re.search(r'id\s+([a-f0-9\-]+)', query_lower)
+        if id_match:
+            return id_match.group(1)
+
+        return ""
+
+    def _extract_number(self, query_lower: str) -> str:
+        """Извлекает число из запроса."""
+        # Убираем пробелы в числах (10 000 -> 10000)
+        query_no_spaces = query_lower.replace(' ', '')
+
+        # Ищем числа
+        numbers = re.findall(r'\d+', query_no_spaces)
+        if numbers:
+            return numbers[-1]  # Берем последнее число
+
+        # Числа словами
+        word_numbers = {
+            'десять': '10',
+            'сто': '100',
+            'тысяч': '1000',
+            'десять тысяч': '10000',
+            'сто тысяч': '100000',
+            'миллион': '1000000'
+        }
+
+        for word, num in word_numbers.items():
+            if word in query_lower:
+                return num
+
+        return "1000"  # Значение по умолчанию
 
 
 # Глобальный экземпляр

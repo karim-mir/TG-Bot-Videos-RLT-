@@ -555,39 +555,63 @@ def parse_with_rules(query: str) -> Tuple[Optional[str], Optional[dict]]:
 
 @router.message(F.text & ~F.text.startswith('/'))
 async def handle_natural_query(message: Message):
-    """Обработчик естественных запросов на русском языке."""
-    query = message.text.strip()
+    """Обработка естественного языка - ДОЛЖЕН БЫТЬ ПЕРВЫМ!"""
+    user_query = message.text.strip()
+    logger.info(f"Естественный запрос: {user_query}")
 
-    logger.info(f"Запрос: {query}")
+    # Проверяем, это команда или нет
+    if user_query.startswith('/'):
+        return  # Пропускаем, обработают другие хендлеры
 
     try:
-        sql, params = parse_natural_query(query)
+        # Генерация SQL через LLM
+        sql = llm_client.generate_sql_from_natural_language(user_query)
 
         if not sql:
-            await message.answer("🤔 Я не понял ваш запрос.")
+            await message.answer("Не удалось сгенерировать запрос. Попробуйте сформулировать иначе.")
             return
 
-        logger.info(f"SQL: {sql}")
-        logger.info(f"Params: {params}")
+        logger.info(f"LLM сгенерировал SQL: {sql}")
 
-        # Выполняем запрос
-        if params:
-            param_values = list(params.values())
-            result = await db.execute_scalar(sql, *param_values)
-        else:
-            result = await db.execute_scalar(sql)
+        # Исполнение SQL
+        try:
+            # Для COUNT запросов
+            sql_upper = sql.upper().strip()
 
-        logger.info(f"Результат: {result}")
+            if sql_upper.startswith('SELECT COUNT'):
+                # COUNT запрос
+                result = await db.execute_scalar(sql)
+                await message.answer(f"Результат: {result}")
 
-        if result is None:
-            result = 0
+            elif sql_upper.startswith('SELECT'):
+                # SELECT запрос (много строк)
+                result = await db.execute_query(sql)
+                if not result:
+                    await message.answer("Данные не найдены.")
+                    return
 
-        # Отправляем только число
-        await message.answer(str(result))
+                # Форматируем результат
+                response = "Результаты:\n"
+                for row in result[:10]:
+                    response += f"- {row}\n"
+
+                if len(result) > 10:
+                    response += f"\n... и еще {len(result) - 10} строк"
+
+                await message.answer(response[:4000])
+
+            else:
+                # Другие запросы
+                await db.execute(sql)
+                await message.answer(f"Запрос выполнен: {sql[:100]}...")
+
+        except Exception as e:
+            logger.error(f"Ошибка выполнения SQL: {e}")
+            await message.answer(f"Ошибка выполнения запроса: {str(e)[:100]}")
 
     except Exception as e:
         logger.error(f"Ошибка: {e}", exc_info=True)
-        await message.answer("❌ Ошибка при обработке запроса.")
+        await message.answer("Произошла ошибка при обработке запроса.")
 
 
 @router.message(F.text.startswith('/'))
