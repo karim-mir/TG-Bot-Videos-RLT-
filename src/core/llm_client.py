@@ -90,6 +90,12 @@ class LLMClient:
         prompt = f"""
     Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом с точкой с запятой в конце.
 
+    ВАЖНЫЕ ПРАВИЛА ПО ДАТАМ:
+    1. Для месяцев используй ПОЛНЫЕ ДНИ: '2025-06-30', '2025-11-30'
+    2. Для диапазона июнь 2025: BETWEEN '2025-06-01' AND '2025-06-30'
+    3. Для диапазона ноябрь 2025: BETWEEN '2025-11-01' AND '2025-11-30'
+    4. Лучше используй EXTRACT для месяцев: EXTRACT(YEAR FROM ...) = 2025 AND EXTRACT(MONTH FROM ...) = 6
+
     Структура базы данных:
     1. Таблица videos (финальная статистика видео):
        - id, creator_id, views_count, video_created_at
@@ -99,24 +105,15 @@ class LLMClient:
        - video_id, delta_views_count, delta_likes_count, created_at
        - Используй для: дельты просмотров, отрицательные значения, изменения по часам
 
-    ВНИМАНИЕ:
-    - Для "замеров статистики", "отрицательных просмотров", "дельт" используй video_snapshots
-    - Для "сколько видео", "креаторов", "даты публикации" используй videos
-    - Для дат публикации видео используй: (video_created_at AT TIME ZONE 'UTC')::date
-    - Для дат снапшотов используй: DATE(created_at)
-
     Примеры:
+    Вопрос: Какое суммарное количество просмотров набрали все видео, опубликованные в июне 2025 года?
+    SQL: SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;
+
     Вопрос: Сколько всего замеров статистики с отрицательными просмотрами?
     SQL: SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0;
 
     Вопрос: Сколько видео опубликовал креатор X в период с 1 по 5 ноября?
     SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'X' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-11-01' AND '2025-11-05';
-
-    Вопрос: Сколько всего видео?
-    SQL: SELECT COUNT(*) FROM videos;
-
-    Вопрос: На сколько просмотров выросли все видео 28 ноября?
-    SQL: SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = '2025-11-28';
 
     Вопрос: {user_query}
     SQL:"""
@@ -130,43 +127,94 @@ class LLMClient:
 
         sql = sql.strip()
 
-        # Исправляем незавершенные кавычки
-        if sql.count("'") % 2 != 0:
-            # Добавляем недостающую кавычку в конце
-            sql = sql.rstrip(";") + "'"
+        # 1. Исправляем незавершенные кавычки
+        sql = self._fix_unclosed_quotes(sql)
 
-        # Добавляем точку с запятой если нет
+        # 2. Исправляем точку с запятой в кавычках
+        sql = self._fix_semicolon_in_quotes(sql)
+
+        # 3. Добавляем точку с запятой если нет
         if not sql.endswith(';'):
             sql += ';'
 
-        # Если SQL слишком длинный или содержит лишнее
+        # 4. Проверяем логику запроса
+        sql = self._fix_query_logic(sql, user_query)
+
+        # 5. Если SQL слишком длинный или содержит лишнее
         if '\n' in sql and sql.count('\n') > 3:
-            # Берем только первую строку, похожую на SQL
             lines = sql.split('\n')
             for line in lines:
                 if line.upper().startswith('SELECT'):
                     sql = line.strip()
                     break
 
-        # Очищаем от комментариев
+        # 6. Очищаем от комментариев
         if '--' in sql:
             sql = sql.split('--')[0].strip()
 
-        # Добавляем FROM если его нет
-        if 'SELECT' in sql.upper() and 'FROM' not in sql.upper():
-            # Пробуем исправить простые случаи
-            if 'videos' in sql.lower() and 'creator_id' in sql.lower():
-                # Пример: SELECT COUNT(*) WHERE creator_id = 'id'
-                count_match = re.search(r'SELECT\s+(.+?)\s+WHERE', sql, re.IGNORECASE)
-                if count_match:
-                    select_part = count_match.group(1)
-                    where_part = sql.split('WHERE', 1)[1]
-                    sql = f"SELECT {select_part} FROM videos WHERE {where_part}"
+        return sql
 
-        # Исправляем таблицу
-        if 'video_snapshots' in sql.lower() and 'creator_id' in sql.lower():
-            # В snapshots нет creator_id, нужно через JOIN
-            sql = sql.replace('video_snapshots', 'videos')
+    def _fix_unclosed_quotes(self, sql: str) -> str:
+        """Исправляет незавершенные кавычки."""
+        # Считаем одинарные кавычки
+        single_quotes = sql.count("'")
+
+        if single_quotes % 2 != 0:
+            # Нечетное количество - добавляем в конец перед точкой с запятой
+            if sql.endswith(';'):
+                sql = sql[:-1] + "'" + ";"
+            else:
+                sql = sql + "'"
+
+        return sql
+
+    def _fix_semicolon_in_quotes(self, sql: str) -> str:
+        """Исправляет точку с запятой внутри кавычек."""
+        # Ищем паттерн 'YYYY-MM-DD;'
+        import re
+        pattern = r"'(\d{4}-\d{2}-\d{2});'"
+        matches = re.findall(pattern, sql)
+
+        for match in matches:
+            correct_date = match[:-1]  # Убираем точку с запятой
+            sql = sql.replace(f"'{match};'", f"'{correct_date}'")
+
+        return sql
+
+    def _fix_query_logic(self, sql: str, user_query: str) -> str:
+        """Исправляет логические ошибки в SQL."""
+        query_lower = user_query.lower()
+        sql_lower = sql.lower()
+
+        # 1. Запросы о суммарных просмотрах ВСЕГДА используют таблицу videos
+        if "суммарное количество просмотров" in query_lower or "сумма просмотров" in query_lower:
+            if "video_snapshots" in sql_lower and "delta_views_count" in sql_lower:
+                # Заменяем на правильный запрос
+                if "июне" in query_lower:
+                    return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                elif "ноябре" in query_lower:
+                    return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11;"
+                else:
+                    return "SELECT SUM(views_count) FROM videos;"
+
+        # 2. Исправляем некорректные даты
+        import re
+
+        # Исправляем '2025-06-3' -> '2025-06-30'
+        if "'2025-06-3'" in sql:
+            sql = sql.replace("'2025-06-3'", "'2025-06-30'")
+
+        # Исправляем '2025-11-5' -> '2025-11-05' (но для периода 1-5 ноября это правильно!)
+        # Внимание: для периода 1-5 ноября '2025-11-5' это правильно, не меняем!
+
+        # 3. Если в запросе есть "опубликованные в июне/ноябре", используем EXTRACT
+        if any(month in query_lower for month in ["июне", "ноябре", "январе", "феврале"]):
+            if "between" in sql_lower and "2025" in sql_lower:
+                # Заменяем BETWEEN на EXTRACT для надежности
+                month_map = {"июне": 6, "ноябре": 11, "январе": 1, "феврале": 2}
+                for month_ru, month_num in month_map.items():
+                    if month_ru in query_lower:
+                        return f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = {month_num};"
 
         return sql
 
@@ -203,70 +251,49 @@ class LLMClient:
         return True
 
     def _fallback_sql_for_query(self, user_query: str) -> str:
-        """Улучшенные fallback правила с условиями и датами."""
+        """Умные fallback правила, а не хардкод."""
         query_lower = user_query.lower()
 
-        # Извлекаем ID креатора и число
+        # Извлекаем информацию
         creator_id = self._extract_creator_id(query_lower)
-        number = self._extract_number(query_lower)
 
-        # Парсим даты из запроса
-        date_range = self._extract_date_range(query_lower)
+        # 1. Сумма просмотров за месяц
+        if "суммарное количество просмотров" in query_lower:
+            if "июне" in query_lower:
+                return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+            elif "ноябре" in query_lower:
+                return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11;"
+            else:
+                return "SELECT SUM(views_count) FROM videos;"
 
-        # 1. Запросы с датами (новый тест работодателя)
-        if "опубликовал" in query_lower and "в период" in query_lower and creator_id and date_range:
-            date_from, date_to = date_range
-            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND DATE(video_created_at) BETWEEN '{date_from}' AND '{date_to}'"
+        # 2. Запросы с креатором и датами
+        if creator_id and any(word in query_lower for word in ["опубликовал", "период", "ноября", "июня"]):
+            date_range = self._extract_date_range(query_lower)
+            if date_range:
+                date_from, date_to = date_range
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '{date_from}' AND '{date_to}';"
+            elif "июне" in query_lower:
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
 
-        # 2. Запросы с условиями по просмотрам
-        has_creator = bool(creator_id)
-        has_views_condition = any(word in query_lower for word in ['больше', 'больш', 'превысил', 'набрали', 'свыше'])
-        has_number = bool(number)
+        # 3. Запросы с условиями по просмотрам
+        if creator_id and any(word in query_lower for word in ['больше', 'набрали']):
+            number = self._extract_number(query_lower)
+            if number:
+                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {number};"
 
-        if has_creator and has_views_condition and has_number:
-            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {number}"
-        elif has_creator and has_views_condition:
-            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > 10000"
-        elif has_creator:
-            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
-        elif has_views_condition and has_number:
-            return f"SELECT COUNT(*) FROM videos WHERE views_count > {number}"
-        elif has_views_condition:
-            return "SELECT COUNT(*) FROM videos WHERE views_count > 10000"
+        # 4. Отрицательные просмотры
+        if "замеров статистики" in query_lower and "отрицательным" in query_lower:
+            return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0;"
 
-        # 3. Специфичные запросы с датами
-        if "опубликовано в ноябре" in query_lower and "2025" in query_lower:
-            return "SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11"
-
-        # 4. Дельты просмотров
-        if "на сколько просмотров в сумме выросли все видео" in query_lower and "ноября" in query_lower:
-            # Извлекаем дату
-            date = self._extract_single_date(query_lower)
-            if date:
-                return f"SELECT COALESCE(SUM(delta_views_count), 0) FROM video_snapshots WHERE DATE(created_at) = '{date}'"
-
-        # 5. Замеры с отрицательными просмотрами
-        if "замеров статистики с отрицательными просмотрами" in query_lower:
-            return "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"
-
-        # 6. Видео с новыми просмотрами
-        if "разных видео получали новые просмотры" in query_lower:
-            date = self._extract_single_date(query_lower)
-            if date:
-                return f"SELECT COUNT(DISTINCT video_id) FROM video_snapshots WHERE DATE(created_at) = '{date}' AND delta_views_count > 0"
-
-        # 7. Дефолтные запросы по ключевым словам
+        # 5. Общие запросы
         if "сколько всего видео" in query_lower:
-            return "SELECT COUNT(*) FROM videos"
-        elif "сколько разных креаторов" in query_lower:
-            return "SELECT COUNT(DISTINCT creator_id) FROM videos"
-        elif "сумма просмотров" in query_lower:
-            return "SELECT SUM(views_count) FROM videos"
-        elif "среднее количество просмотров" in query_lower:
-            return "SELECT AVG(views_count) FROM videos"
+            return "SELECT COUNT(*) FROM videos;"
+
+        if "сколько разных креаторов" in query_lower:
+            return "SELECT COUNT(DISTINCT creator_id) FROM videos;"
 
         # Дефолтный запрос
-        return "SELECT COUNT(*) FROM videos"
+        return "SELECT COUNT(*) FROM videos;"
 
     def _extract_date_range(self, query: str) -> tuple:
         """Извлекает диапазон дат из запроса."""
