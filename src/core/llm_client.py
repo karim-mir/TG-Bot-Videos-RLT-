@@ -85,33 +85,37 @@ class LLMClient:
             return self._fallback_sql_for_query(user_query)
 
     def _build_enhanced_prompt(self, user_query: str) -> str:
-        """Строит простой промпт для Gemma3:4b."""
+        """Строит точный промпт для Gemma3:4b."""
 
         prompt = f"""
-Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом.
+    Ты SQL-ассистент. Ответь ТОЛЬКО SQL запросом.
 
-Таблицы:
-1. videos (id, creator_id, views_count, likes_count, comments_count, reports_count, video_created_at)
-2. video_snapshots (video_id, views_count, likes_count, delta_views_count, delta_likes_count, created_at)
+    Структура базы данных:
+    1. Таблица videos содержит все видео с финальной статистикой
+       - creator_id (идентификатор креатора)
+       - views_count (общее количество просмотров)
+       - likes_count (лайки)
+       - comments_count (комментарии)
 
-Примеры:
-Вопрос: Сколько всего видео?
-SQL: SELECT COUNT(*) FROM videos
+    2. Таблица video_snapshots содержит почасовые изменения (дельта)
 
-Вопрос: Сколько видео с просмотрами больше 10000?
-SQL: SELECT COUNT(*) FROM videos WHERE views_count > 10000
+    ВАЖНО: Для итоговой статистики используй ТОЛЬКО таблицу videos
 
-Вопрос: Сколько видео у креатора abc123?
-SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123'
+    Примеры:
+    Вопрос: Сколько видео у креатора с id abc123 набрали больше 5000 просмотров?
+    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'abc123' AND views_count > 5000
 
-Вопрос: Сумма просмотров всех видео?
-SQL: SELECT SUM(views_count) FROM videos
+    Вопрос: Сколько видео с просмотрами больше 10000?
+    SQL: SELECT COUNT(*) FROM videos WHERE views_count > 10000
 
-Вопрос: Дельты просмотров за 2025-11-26?
-SQL: SELECT SUM(delta_views_count) FROM video_snapshots WHERE DATE(created_at) = '2025-11-26'
+    Вопрос: Сколько видео у креатора с id xyz789?
+    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'xyz789'
 
-Вопрос: {user_query}
-SQL:"""
+    Вопрос: Сумма просмотров видео креатора abc123?
+    SQL: SELECT SUM(views_count) FROM videos WHERE creator_id = 'abc123'
+
+    Вопрос: {user_query}
+    SQL:"""
 
         return prompt.strip()
 
@@ -186,55 +190,43 @@ SQL:"""
         return True
 
     def _fallback_sql_for_query(self, user_query: str) -> str:
-        """Улучшенные fallback правила."""
+        """Улучшенные fallback правила с условиями."""
         query_lower = user_query.lower()
 
-        # Извлекаем ID креатора и число заранее
+        # Извлекаем ID креатора и число
         creator_id = self._extract_creator_id(query_lower)
         number = self._extract_number(query_lower)
 
-        fallback_rules = [
-            # Креаторы
-            (["креатора", "создателя", "creator"],
-             f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'" if creator_id else None),
+        # Проверяем наличие условий
+        has_creator = bool(creator_id)
+        has_views_condition = any(word in query_lower for word in ['больше', 'больш', 'превысил', 'набрали', 'свыше'])
+        has_number = bool(number)
 
-            # Просмотры
-            (["больше", "больш", "превысил", "превысило", "набрали"],
-             f"SELECT COUNT(*) FROM videos WHERE views_count > {number}"),
+        # Строим SQL на основе условий
+        if has_creator and has_views_condition and has_number:
+            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {number}"
+        elif has_creator and has_views_condition:
+            # Есть креатор и условие "больше", но нет числа
+            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > 10000"
+        elif has_creator:
+            # Только креатор
+            return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}'"
+        elif has_views_condition and has_number:
+            # Только условие по просмотрам
+            return f"SELECT COUNT(*) FROM videos WHERE views_count > {number}"
+        elif has_views_condition:
+            # Условие "больше" без числа
+            return "SELECT COUNT(*) FROM videos WHERE views_count > 10000"
 
-            # Лайки
-            (["лайк", "лайков", "likes"],
-             f"SELECT SUM(likes_count) FROM videos"),
-
-            # Комментарии
-            (["комментар", "comments"],
-             f"SELECT SUM(comments_count) FROM videos"),
-
-            # Видео всего
-            (["сколько всего видео", "видео есть", "всего видео"],
-             "SELECT COUNT(*) FROM videos"),
-
-            # Дельты/изменения
-            (["дельта", "изменил", "вырос", "увеличил", "рост"],
-             "SELECT SUM(delta_views_count) FROM video_snapshots WHERE delta_views_count > 0"),
-
-            # Отрицательные
-            (["отрицательн", "уменьшил", "снизил", "упал"],
-             "SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0"),
-
-            # Уникальные креаторы
-            (["разных креатор", "уникальн", "различн"],
-             "SELECT COUNT(DISTINCT creator_id) FROM videos"),
-        ]
-
-        for keywords, sql_template in fallback_rules:
-            if any(keyword in query_lower for keyword in keywords):
-                if sql_template:
-                    # Проверяем, что SQL валиден
-                    if 'creator_id' in sql_template and "'" in sql_template and "''" not in sql_template:
-                        return sql_template
-                    elif sql_template.startswith("SELECT"):
-                        return sql_template
+        # Дефолтные запросы по ключевым словам
+        if "сколько всего видео" in query_lower:
+            return "SELECT COUNT(*) FROM videos"
+        elif "сколько разных креаторов" in query_lower:
+            return "SELECT COUNT(DISTINCT creator_id) FROM videos"
+        elif "сумма просмотров" in query_lower:
+            return "SELECT SUM(views_count) FROM videos"
+        elif "среднее количество просмотров" in query_lower:
+            return "SELECT AVG(views_count) FROM videos"
 
         # Дефолтный запрос
         return "SELECT COUNT(*) FROM videos"
@@ -325,30 +317,38 @@ SQL:"""
         return ""
 
     def _extract_number(self, query_lower: str) -> str:
-        """Извлекает число из запроса."""
-        # Убираем пробелы в числах (10 000 -> 10000)
-        query_no_spaces = query_lower.replace(' ', '')
+        """Извлекает число из запроса, включая числа с пробелами."""
+        # Сначала пробуем найти числа с пробелами (10 000, 100 000)
+        spaced_numbers = re.findall(r'(\d[\d\s]*\d)', query_lower.replace(',', ''))
+        if spaced_numbers:
+            # Берем последнее число и убираем пробелы
+            num = spaced_numbers[-1].replace(' ', '')
+            return num
 
-        # Ищем числа
-        numbers = re.findall(r'\d+', query_no_spaces)
+        # Затем ищем обычные числа
+        numbers = re.findall(r'\d+', query_lower.replace(' ', ''))
         if numbers:
-            return numbers[-1]  # Берем последнее число
+            return numbers[-1]
 
         # Числа словами
         word_numbers = {
             'десять': '10',
             'сто': '100',
             'тысяч': '1000',
+            'тысяча': '1000',
             'десять тысяч': '10000',
+            '10 тысяч': '10000',
             'сто тысяч': '100000',
-            'миллион': '1000000'
+            '100 тысяч': '100000',
+            'миллион': '1000000',
+            'миллиона': '1000000'
         }
 
         for word, num in word_numbers.items():
             if word in query_lower:
                 return num
 
-        return "1000"  # Значение по умолчанию
+        return ""
 
 
 # Глобальный экземпляр
