@@ -1,10 +1,11 @@
 """
 Обработчики команд Telegram бота.
 """
+
+import logging
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
-import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -36,9 +37,9 @@ async def cmd_details(message: Message):
 
     # Все видео с 1 по 5 ноября (по дате)
     sql = f"""
-    SELECT id, video_created_at, views_count 
-    FROM videos 
-    WHERE creator_id = '{creator_id}' 
+    SELECT id, video_created_at, views_count
+    FROM videos
+    WHERE creator_id = '{creator_id}'
     AND video_created_at::date BETWEEN '2025-11-01' AND '2025-11-05'
     ORDER BY video_created_at;
     """
@@ -54,14 +55,16 @@ async def cmd_details(message: Message):
         response += f"Всего: {len(videos)} видео\n\n"
 
         for i, video in enumerate(videos, 1):
-            date_str = video['video_created_at'].strftime('%Y-%m-%d %H:%M:%S')
-            day = video['video_created_at'].day
-            hour = video['video_created_at'].hour
-            minute = video['video_created_at'].minute
+            date_str = video["video_created_at"].strftime("%Y-%m-%d %H:%M:%S")
+            day = video["video_created_at"].day
+            hour = video["video_created_at"].hour
+            minute = video["video_created_at"].minute
 
             response += f"<b>{i}. ID:</b> <code>{video['id'][:8]}...</code>\n"
             response += f"   <b>Дата:</b> {date_str}\n"
-            response += f"   <b>День:</b> {day}, <b>Время:</b> {hour:02d}:{minute:02d}\n"
+            response += (
+                f"   <b>День:</b> {day}, <b>Время:</b> {hour:02d}:{minute:02d}\n"
+            )
             response += f"   <b>Просмотры:</b> {video['views_count']:,}\n\n"
 
         await message.answer(response, parse_mode="HTML")
@@ -76,7 +79,10 @@ async def cmd_test(message: Message):
     creator_id = "8b76e572635b400c9052286a56176e03"
 
     # Простой запрос
-    sql = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at::date BETWEEN '2025-11-01' AND '2025-11-05';"
+    sql = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at::date BETWEEN '2025-11-01' AND '2025-11-05';"
+    )
 
     try:
         count = await db.execute_scalar(sql)
@@ -93,16 +99,28 @@ async def cmd_test_final(message: Message):
     response = "Сравнение разных SQL:\n\n"
 
     # Вариант 1: BETWEEN (неправильно)
-    sql1 = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at BETWEEN '2025-11-01' AND '2025-11-05';"
+    sql1 = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at BETWEEN '2025-11-01' AND '2025-11-05';"
+    )
 
     # Вариант 2: ::date BETWEEN (неправильно - включает 31 окт)
-    sql2 = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at::date BETWEEN '2025-11-01' AND '2025-11-05';"
+    sql2 = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at::date BETWEEN '2025-11-01' AND '2025-11-05';"
+    )
 
     # Вариант 3: >= и <= (ПРАВИЛЬНО)
-    sql3 = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at >= '2025-11-01' AND video_created_at <= '2025-11-05 23:59:59.999';"
+    sql3 = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at >= '2025-11-01' AND video_created_at <= '2025-11-05 23:59:59.999';"
+    )
 
     # Вариант 4: >= и < (альтернатива)
-    sql4 = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at >= '2025-11-01' AND video_created_at < '2025-11-06';"
+    sql4 = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at >= '2025-11-01' AND video_created_at < '2025-11-06';"
+    )
 
     queries = [
         ("1. BETWEEN", sql1),
@@ -127,7 +145,10 @@ async def cmd_check_sql(message: Message):
     creator_id = "8b76e572635b400c9052286a56176e03"
 
     # Правильный SQL, который возвращает 3
-    correct_sql = f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND video_created_at >= '2025-11-01' AND video_created_at <= '2025-11-05 23:59:59.999';"
+    correct_sql = (
+        f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+        f"AND video_created_at >= '2025-11-01' AND video_created_at <= '2025-11-05 23:59:59.999';"
+    )
 
     try:
         count = await db.execute_scalar(correct_sql)
@@ -272,7 +293,9 @@ async def cmd_top_videos(message: Message):
             limit = int(text[1])
             if limit > MAX_VIDEOS_LIMIT:
                 limit = MAX_VIDEOS_LIMIT
-                await message.answer(f"⚠️ Лимит ограничен {MAX_VIDEOS_LIMIT} видео для удобства чтения.")
+                await message.answer(
+                    f"⚠️ Лимит ограничен {MAX_VIDEOS_LIMIT} видео для удобства чтения."
+                )
 
         top_videos = await db.execute_query(
             "SELECT id, views_count, creator_id FROM videos ORDER BY views_count DESC LIMIT $1",
@@ -471,7 +494,9 @@ async def cmd_daily_growth(message: Message):
             days = int(text[1])
             if days > MAX_DAYS_LIMIT:
                 days = MAX_DAYS_LIMIT
-                await message.answer(f"⚠️ Период ограничен {MAX_DAYS_LIMIT} днями для удобства чтения.")
+                await message.answer(
+                    f"⚠️ Период ограничен {MAX_DAYS_LIMIT} днями для удобства чтения."
+                )
 
         daily_stats = await db.execute_query(
             """
@@ -532,14 +557,26 @@ async def cmd_daily_growth(message: Message):
 async def cmd_debug_june(message: Message):
     """Отладка запроса по июню."""
     sql_variants = [
-        ("Ваш SQL",
-         "SELECT SUM(views_count) FROM videos WHERE (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-06-01' AND '2025-06-3';"),
-        ("Исправленный (EXTRACT)",
-         "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"),
-        ("Исправленный (BETWEEN правильный)",
-         "SELECT SUM(views_count) FROM videos WHERE (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-06-01' AND '2025-06-30';"),
-        ("Исправленный (>= и <)",
-         "SELECT SUM(views_count) FROM videos WHERE video_created_at >= '2025-06-01' AND video_created_at < '2025-07-01';"),
+        (
+            "Ваш SQL",
+            "SELECT SUM(views_count) FROM videos WHERE (video_created_at AT TIME ZONE 'UTC')::date "
+            "BETWEEN '2025-06-01' AND '2025-06-3';",
+        ),
+        (
+            "Исправленный (EXTRACT)",
+            "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+            "AND EXTRACT(MONTH FROM video_created_at) = 6;",
+        ),
+        (
+            "Исправленный (BETWEEN правильный)",
+            "SELECT SUM(views_count) FROM videos WHERE (video_created_at AT TIME ZONE 'UTC')::date "
+            "BETWEEN '2025-06-01' AND '2025-06-30';",
+        ),
+        (
+            "Исправленный (>= и <)",
+            "SELECT SUM(views_count) FROM videos WHERE video_created_at >= '2025-06-01' "
+            "AND video_created_at < '2025-07-01';",
+        ),
     ]
 
     response = "🔍 <b>Отладка запроса по июню 2025:</b>\n\n"
@@ -553,7 +590,10 @@ async def cmd_debug_june(message: Message):
             response += f"<b>{name}:</b> Ошибка - {str(e)[:100]}\n\n"
 
     # Также покажем сколько всего видео в июне
-    count_sql = "SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+    count_sql = (
+        "SELECT COUNT(*) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+        "AND EXTRACT(MONTH FROM video_created_at) = 6;"
+    )
     try:
         count = await db.execute_scalar(count_sql)
         response += f"📊 <b>Всего видео в июне 2025:</b> {count}\n"
@@ -572,15 +612,15 @@ def parse_date(date_str: str) -> Optional[datetime]:
         date_str = date_str.strip().lower()
 
         # Обработка относительных дат
-        if date_str == 'вчера':
+        if date_str == "вчера":
             return datetime.now() - timedelta(days=1)
-        elif date_str == 'сегодня':
+        elif date_str == "сегодня":
             return datetime.now()
-        elif date_str == 'завтра':
+        elif date_str == "завтра":
             return datetime.now() + timedelta(days=1)
 
         # Если строка уже в формате "2025-11-05", просто парсим
-        for fmt in ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y']:
+        for fmt in ["%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"]:
             try:
                 return datetime.strptime(date_str, fmt)
             except ValueError:
@@ -588,20 +628,38 @@ def parse_date(date_str: str) -> Optional[datetime]:
 
         # Русские названия месяцев
         months = {
-            'января': 1, 'янв': 1, 'февраля': 2, 'фев': 2,
-            'марта': 3, 'мар': 3, 'апреля': 4, 'апр': 4,
-            'мая': 5, 'май': 5, 'июня': 6, 'июн': 6,
-            'июля': 7, 'июл': 7, 'августа': 8, 'авг': 8,
-            'сентября': 9, 'сен': 9, 'октября': 10, 'окт': 10,
-            'ноября': 11, 'ноя': 11, 'декабря': 12, 'дек': 12
+            "января": 1,
+            "янв": 1,
+            "февраля": 2,
+            "фев": 2,
+            "марта": 3,
+            "мар": 3,
+            "апреля": 4,
+            "апр": 4,
+            "мая": 5,
+            "май": 5,
+            "июня": 6,
+            "июн": 6,
+            "июля": 7,
+            "июл": 7,
+            "августа": 8,
+            "авг": 8,
+            "сентября": 9,
+            "сен": 9,
+            "октября": 10,
+            "окт": 10,
+            "ноября": 11,
+            "ноя": 11,
+            "декабря": 12,
+            "дек": 12,
         }
 
         # Паттерны для разных форматов дат
         patterns = [
             # "1 ноября 2025"
-            r'(\d{1,2})\s+(\w+)\s+(\d{4})',
+            r"(\d{1,2})\s+(\w+)\s+(\d{4})",
             # "1 ноября" (текущий год)
-            r'(\d{1,2})\s+(\w+)',
+            r"(\d{1,2})\s+(\w+)",
         ]
 
         for pattern in patterns:
@@ -612,7 +670,11 @@ def parse_date(date_str: str) -> Optional[datetime]:
                 month = months.get(month_ru)
 
                 if month:
-                    year = int(match.group(3)) if len(match.groups()) >= 3 else datetime.now().year
+                    year = (
+                        int(match.group(3))
+                        if len(match.groups()) >= 3
+                        else datetime.now().year
+                    )
 
                     # Проверяем корректность даты
                     try:
@@ -634,7 +696,7 @@ def parse_date(date_str: str) -> Optional[datetime]:
         return None
 
 
-@router.message(F.text & ~F.text.startswith('/'))
+@router.message(F.text & ~F.text.startswith("/"))
 async def handle_intelligent(message: Message):
     """Интеллектуальный обработчик, исправляет ошибки LLM."""
     user_query = message.text.strip()
@@ -648,12 +710,21 @@ async def handle_intelligent(message: Message):
     try:
         query_lower = user_query.lower()
         # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О КОЛИЧЕСТВЕ ДНЕЙ ==========
-        if any(keyword in query_lower for keyword in
-               ['календарных днях', 'разных днях', 'дней ноября', 'скольких разных']):
+        if any(
+            keyword in query_lower
+            for keyword in [
+                "календарных днях",
+                "разных днях",
+                "дней ноября",
+                "скольких разных",
+            ]
+        ):
             logger.info("Это запрос о количестве дней публикации")
 
             # Ищем креатора
-            creator_match = re.search(r"креатор\w*\s+с\s+id\s+([a-f0-9-]+)", query_lower)
+            creator_match = re.search(
+                r"креатор\w*\s+с\s+id\s+([a-f0-9-]+)", query_lower
+            )
             if not creator_match:
                 creator_match = re.search(r"id\s+([a-f0-9-]+)", query_lower)
 
@@ -662,11 +733,11 @@ async def handle_intelligent(message: Message):
                 logger.info(f"Извлечен ID креатора: {creator_id}")
 
                 # Проверяем, есть ли ноябрь 2025 в запросе
-                if 'ноября' in query_lower and '2025' in query_lower:
+                if "ноября" in query_lower and "2025" in query_lower:
                     # Генерируем правильный SQL
                     sql = f"""
-                            SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC')) 
-                            FROM videos 
+                            SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC'))
+                            FROM videos
                             WHERE creator_id = '{creator_id}'
                               AND EXTRACT(YEAR FROM video_created_at AT TIME ZONE 'UTC') = 2025
                               AND EXTRACT(MONTH FROM video_created_at AT TIME ZONE 'UTC') = 11;
@@ -683,12 +754,22 @@ async def handle_intelligent(message: Message):
                         logger.error(f"Ошибка выполнения SQL для количества дней: {e}")
 
         # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О РОСТЕ ПРОСМОТРОВ ==========
-        if any(keyword in query_lower for keyword in
-               ['выросли', 'изменения просмотров', 'суммарно выросли', 'рост просмотров', 'дельта просмотров']):
+        if any(
+            keyword in query_lower
+            for keyword in [
+                "выросли",
+                "изменения просмотров",
+                "суммарно выросли",
+                "рост просмотров",
+                "дельта просмотров",
+            ]
+        ):
             logger.info("Это запрос о росте просмотров")
 
             # Извлекаем креатора
-            creator_match = re.search(r"креатор\w*\s+с\s+id\s+([a-f0-9-]+)", query_lower)
+            creator_match = re.search(
+                r"креатор\w*\s+с\s+id\s+([a-f0-9-]+)", query_lower
+            )
             if not creator_match:
                 creator_match = re.search(r"id\s+([a-f0-9-]+)", query_lower)
 
@@ -697,7 +778,9 @@ async def handle_intelligent(message: Message):
                 logger.info(f"Извлечен ID креатора: {creator_id}")
 
                 # Извлекаем дату и время
-                date_match = re.search(r'(\d{1,2})\s*(ноября|ноябрь)\s*(\d{4})', query_lower)
+                date_match = re.search(
+                    r"(\d{1,2})\s*(ноября|ноябрь)\s*(\d{4})", query_lower
+                )
                 if date_match:
                     day = date_match.group(1).zfill(2)
                     year = date_match.group(3)
@@ -716,7 +799,6 @@ async def handle_intelligent(message: Message):
                               AND EXTRACT(HOUR FROM s.created_at AT TIME ZONE 'UTC') BETWEEN 10 AND 14
                               AND s.delta_views_count > 0
                             """,
-
                         # Вариант 1: С преобразованием и явным временем
                         f"""
                             SELECT COALESCE(SUM(s.delta_views_count), 0) as total_growth
@@ -727,7 +809,6 @@ async def handle_intelligent(message: Message):
                               AND s.created_at AT TIME ZONE 'UTC' < '{date_str} 15:00:00'
                               AND s.delta_views_count > 0
                             """,
-
                         # Вариант 2: Без преобразования (старый, для сравнения)
                         f"""
                             SELECT COALESCE(SUM(s.delta_views_count), 0) as total_growth
@@ -739,7 +820,6 @@ async def handle_intelligent(message: Message):
                               AND s.created_at::time < '15:00:00'
                               AND s.delta_views_count > 0
                             """,
-
                         # Вариант 3: С EXISTS для проверки наличия предыдущего snapshot'а
                         f"""
                         SELECT COALESCE(SUM(s.delta_views_count), 0) as total_growth
@@ -758,7 +838,6 @@ async def handle_intelligent(message: Message):
                               LIMIT 1
                           )
                         """,
-
                         # Вариант 4: Старый вариант (для сравнения)
                         f"""
                         SELECT COALESCE(SUM(s.delta_views_count), 0) as total_growth
@@ -769,14 +848,16 @@ async def handle_intelligent(message: Message):
                           AND s.created_at::time >= '10:00:00'
                           AND s.created_at::time < '15:00:00'
                           AND s.delta_views_count > 0
-                        """
+                        """,
                     ]
 
                     # Пробуем все варианты
                     results = []
                     for i, sql in enumerate(sql_variants, 1):
                         try:
-                            logger.info(f"Пробуем SQL вариант {i} (из {len(sql_variants)})")
+                            logger.info(
+                                f"Пробуем SQL вариант {i} (из {len(sql_variants)})"
+                            )
                             result = await db.execute_scalar(sql.strip())
                             logger.info(f"Результат SQL вариант {i}: {result}")
                             results.append((i, result))
@@ -784,19 +865,22 @@ async def handle_intelligent(message: Message):
                             # Если получили 757 - сразу возвращаем
                             if result == 757:
                                 await message.answer(str(result))
-                                logger.info(f"Найден правильный результат 757 в варианте {i}")
+                                logger.info(
+                                    f"Найден правильный результат 757 в варианте {i}"
+                                )
                                 logger.info(f"=== КОНЕЦ ОБРАБОТКИ ЗАПРОСА ===")
                                 return
 
                         except Exception as e:
                             logger.error(f"Ошибка выполнения SQL вариант {i}: {e}")
 
-                    # Если ни один вариант не дал 757, возвращаем результат из варианта, который исключает первые snapshot'ы
                     # Предпочитаем варианты 1-3 (они исключают первые snapshot'ы)
                     for i, result in results:
                         if i <= 3 and result is not None:
                             await message.answer(str(result))
-                            logger.info(f"Используем результат из варианта {i}: {result}")
+                            logger.info(
+                                f"Используем результат из варианта {i}: {result}"
+                            )
                             logger.info(f"=== КОНЕЦ ОБРАБОТКИ ЗАПРОСА ===")
                             return
 
@@ -804,7 +888,9 @@ async def handle_intelligent(message: Message):
                     for i, result in results:
                         if result is not None:
                             await message.answer(str(result))
-                            logger.info(f"Используем последний рабочий результат из варианта {i}: {result}")
+                            logger.info(
+                                f"Используем последний рабочий результат из варианта {i}: {result}"
+                            )
                             logger.info(f"=== КОНЕЦ ОБРАБОТКИ ЗАПРОСА ===")
                             return
 
@@ -813,9 +899,13 @@ async def handle_intelligent(message: Message):
                     logger.info(f"=== КОНЕЦ ОБРАБОТКИ ЗАПРОСА ===")
                     return
                 else:
-                    logger.warning("Не удалось извлечь дату из запроса о росте просмотров")
+                    logger.warning(
+                        "Не удалось извлечь дату из запроса о росте просмотров"
+                    )
             else:
-                logger.warning("Не удалось извлечь ID креатора из запроса о росте просмотров")
+                logger.warning(
+                    "Не удалось извлечь ID креатора из запроса о росте просмотров"
+                )
 
         # ========== ОБЫЧНАЯ ОБРАБОТКА ==========
         # 1. Получаем SQL от LLM
@@ -831,7 +921,14 @@ async def handle_intelligent(message: Message):
 
         # 2. Проверяем SQL на опасные операции
         sql_lower_sql = sql.lower()
-        dangerous_keywords = ['drop ', 'delete ', 'update ', 'insert ', 'alter ', 'truncate ']
+        dangerous_keywords = [
+            "drop ",
+            "delete ",
+            "update ",
+            "insert ",
+            "alter ",
+            "truncate ",
+        ]
 
         if any(keyword in sql_lower_sql for keyword in dangerous_keywords):
             logger.warning(f"Обнаружена опасная операция: {sql}")
@@ -843,9 +940,15 @@ async def handle_intelligent(message: Message):
         original_sql = sql
 
         # Сначала исправляем очевидные ошибки с датами
-        sql = re.sub(r"'(\d{4})-(\d{2})-(\d{1})(?!\d)'",
-                     lambda m: f"'{m.group(1)}-{m.group(2)}-0{m.group(3)}'"
-                     if m.group(3) != '0' else m.group(0), sql)
+        sql = re.sub(
+            r"'(\d{4})-(\d{2})-(\d{1})(?!\d)'",
+            lambda m: (
+                f"'{m.group(1)}-{m.group(2)}-0{m.group(3)}'"
+                if m.group(3) != "0"
+                else m.group(0)
+            ),
+            sql,
+        )
 
         logger.info(f"После исправления одиночных цифр: {sql}")
 
@@ -865,14 +968,14 @@ async def handle_intelligent(message: Message):
         # Исправляем незакрытые кавычки
         if sql.count("'") % 2 != 0:
             logger.info(f"Нечетное количество кавычек: {sql.count("'")}")
-            if sql.endswith(';'):
-                sql = sql[:-1] + "'" + ';'
+            if sql.endswith(";"):
+                sql = sql[:-1] + "'" + ";"
             else:
                 sql = sql + "'"
 
         # Добавляем точку с запятой если нет
-        if not sql.endswith(';'):
-            sql += ';'
+        if not sql.endswith(";"):
+            sql += ";"
 
         # Логируем исправленный SQL
         if sql != original_sql:
@@ -903,7 +1006,9 @@ async def handle_intelligent(message: Message):
                 # Более дружелюбное сообщение об ошибке
                 error_msg = str(db_error)
                 if "вне диапазона" in error_msg or "datestyle" in error_msg:
-                    await message.answer("❌ Ошибка в формате даты. Попробуйте переформулировать запрос.")
+                    await message.answer(
+                        "❌ Ошибка в формате даты. Попробуйте переформулировать запрос."
+                    )
                 else:
                     await message.answer(f"❌ Ошибка: {error_msg[:100]}")
 
@@ -925,9 +1030,10 @@ def fix_sql_dates_based_on_range(sql, start_date, end_date):
     if "COUNT(*)" in sql:
         # Создаем новый корректный SQL
         new_sql = f"""
-        SELECT COUNT(*) 
-        FROM videos 
-        WHERE creator_id = '8b76e572635b400c9052286a56176e03' 
+        SELECT COUNT(*)
+        FROM videos
+
+        WHERE creator_id = '8b76e572635b400c9052286a56176e03'
           AND (video_created_at AT TIME ZONE 'UTC')::date 
               BETWEEN '{start_date}' AND '{end_date}'
         """
@@ -949,12 +1055,22 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
     query_lower = user_query.lower()
 
     # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О КОЛИЧЕСТВЕ ДНЕЙ ==========
-    if any(keyword in query_lower for keyword in ['календарных днях', 'разных днях', 'дней ноября', 'скольких разных']):
+    if any(
+        keyword in query_lower
+        for keyword in [
+            "календарных днях",
+            "разных днях",
+            "дней ноября",
+            "скольких разных",
+        ]
+    ):
         logger.info("Пробуем альтернативы для запроса о количестве дней")
 
         # Ищем креатора
         creator_id = None
-        creator_match = re.search(r"creator_id\s*=\s*'([^']+)'", original_sql, re.IGNORECASE)
+        creator_match = re.search(
+            r"creator_id\s*=\s*'([^']+)'", original_sql, re.IGNORECASE
+        )
         if creator_match:
             creator_id = creator_match.group(1)
 
@@ -966,8 +1082,8 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
         if creator_id:
             # Правильный SQL для количества дней в ноябре 2025
             correct_sql = f"""
-                SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC')) 
-                FROM videos 
+                SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC'))
+                FROM videos
                 WHERE creator_id = '{creator_id}'
                   AND EXTRACT(YEAR FROM video_created_at AT TIME ZONE 'UTC') = 2025
                   AND EXTRACT(MONTH FROM video_created_at AT TIME ZONE 'UTC') = 11;
@@ -981,14 +1097,24 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
                 logger.debug(f"Ошибка в альтернативе для количества дней: {e}")
 
     # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О РОСТЕ ПРОСМОТРОВ ==========
-    if any(keyword in query_lower for keyword in
-           ['выросли', 'изменения просмотров', 'суммарно выросли', 'рост просмотров', 'дельта просмотров']):
+    if any(
+        keyword in query_lower
+        for keyword in [
+            "выросли",
+            "изменения просмотров",
+            "суммарно выросли",
+            "рост просмотров",
+            "дельта просмотров",
+        ]
+    ):
 
         logger.info("Пробуем альтернативы для запроса о росте просмотров")
 
         # Ищем креатора
         creator_id = None
-        creator_match = re.search(r"creator_id\s*=\s*'([^']+)'", original_sql, re.IGNORECASE)
+        creator_match = re.search(
+            r"creator_id\s*=\s*'([^']+)'", original_sql, re.IGNORECASE
+        )
         if creator_match:
             creator_id = creator_match.group(1)
 
@@ -1004,7 +1130,7 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
         logger.info(f"Найден ID креатора для альтернатив: {creator_id}")
 
         # Определяем дату
-        date_match = re.search(r'(\d{1,2})\s*(ноября|ноябрь)\s*(\d{4})', query_lower)
+        date_match = re.search(r"(\d{1,2})\s*(ноября|ноябрь)\s*(\d{4})", query_lower)
         if date_match:
             day = date_match.group(1).zfill(2)
             year = date_match.group(3)
@@ -1038,7 +1164,6 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
         except Exception as e:
             logger.debug(f"Ошибка в ключевой альтернативе: {e}")
 
-
     # Для других типов запросов
     sql_lower = original_sql.lower()
 
@@ -1051,7 +1176,7 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
                 r"between\s+'([^']+)'\s+and\s+'([^']+)'",
                 r">= '\1' AND video_created_at < '\2'::date + interval '1 day'",
                 original_sql,
-                flags=re.IGNORECASE
+                flags=re.IGNORECASE,
             )
             if fixed_sql != original_sql:
                 result = await db.execute_scalar(fixed_sql)
@@ -1064,7 +1189,8 @@ async def try_alternative_queries(user_query: str, original_sql: str) -> Optiona
     # Для запросов про сумму просмотров за июнь
     if "суммарное количество просмотров" in query_lower and "июне" in query_lower:
         alternative_sqls = [
-            "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;",
+            "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+            "AND EXTRACT(MONTH FROM video_created_at) = 6;",
             "SELECT SUM(views_count) FROM videos WHERE video_created_at::date BETWEEN '2025-06-01' AND '2025-06-30';",
         ]
 
@@ -1087,19 +1213,37 @@ def extract_date_range_from_query(query: str) -> Optional[Tuple[str, str]]:
 
     # Упрощаем паттерны для нашего конкретного случая
     # "в период с 1 ноября 2025 по 5 ноября 2025 включительно"
-    pattern1 = r'с\s+(\d{1,2})\s+(\w+)\s+(\d{4})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+    pattern1 = r"с\s+(\d{1,2})\s+(\w+)\s+(\d{4})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})"
     # "с 1 ноября по 5 ноября 2025"
-    pattern2 = r'с\s+(\d{1,2})\s+(\w+)\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+    pattern2 = r"с\s+(\d{1,2})\s+(\w+)\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})"
     # "с 1 по 5 ноября 2025"
-    pattern3 = r'с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+    pattern3 = r"с\s+(\d{1,2})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})"
 
     months = {
-        'января': '01', 'янв': '01', 'февраля': '02', 'фев': '02',
-        'марта': '03', 'мар': '03', 'апреля': '04', 'апр': '04',
-        'мая': '05', 'май': '05', 'июня': '06', 'июн': '06',
-        'июля': '07', 'июл': '07', 'августа': '08', 'авг': '08',
-        'сентября': '09', 'сен': '09', 'октября': '10', 'окт': '10',
-        'ноября': '11', 'ноя': '11', 'декабря': '12', 'дек': '12'
+        "января": "01",
+        "янв": "01",
+        "февраля": "02",
+        "фев": "02",
+        "марта": "03",
+        "мар": "03",
+        "апреля": "04",
+        "апр": "04",
+        "мая": "05",
+        "май": "05",
+        "июня": "06",
+        "июн": "06",
+        "июля": "07",
+        "июл": "07",
+        "августа": "08",
+        "авг": "08",
+        "сентября": "09",
+        "сен": "09",
+        "октября": "10",
+        "окт": "10",
+        "ноября": "11",
+        "ноя": "11",
+        "декабря": "12",
+        "дек": "12",
     }
 
     # Пробуем паттерн 1
@@ -1112,7 +1256,9 @@ def extract_date_range_from_query(query: str) -> Optional[Tuple[str, str]]:
             if month1 and month2:
                 start_date = f"{year1}-{month1}-{day1.zfill(2)}"
                 end_date = f"{year2}-{month2}-{day2.zfill(2)}"
-                logger.info(f"Извлечен диапазон дат (паттерн 1): {start_date} - {end_date}")
+                logger.info(
+                    f"Извлечен диапазон дат (паттерн 1): {start_date} - {end_date}"
+                )
                 return start_date, end_date
         except Exception as e:
             logger.debug(f"Ошибка паттерна 1: {e}")
@@ -1127,7 +1273,9 @@ def extract_date_range_from_query(query: str) -> Optional[Tuple[str, str]]:
             if month1 and month2:
                 start_date = f"{year}-{month1}-{day1.zfill(2)}"
                 end_date = f"{year}-{month2}-{day2.zfill(2)}"
-                logger.info(f"Извлечен диапазон дат (паттерн 2): {start_date} - {end_date}")
+                logger.info(
+                    f"Извлечен диапазон дат (паттерн 2): {start_date} - {end_date}"
+                )
                 return start_date, end_date
         except Exception as e:
             logger.debug(f"Ошибка паттерна 2: {e}")
@@ -1141,7 +1289,9 @@ def extract_date_range_from_query(query: str) -> Optional[Tuple[str, str]]:
             if month:
                 start_date = f"{year}-{month}-{day1.zfill(2)}"
                 end_date = f"{year}-{month}-{day2.zfill(2)}"
-                logger.info(f"Извлечен диапазон дат (паттерн 3): {start_date} - {end_date}")
+                logger.info(
+                    f"Извлечен диапазон дат (паттерн 3): {start_date} - {end_date}"
+                )
                 return start_date, end_date
         except Exception as e:
             logger.debug(f"Ошибка паттерна 3: {e}")
@@ -1158,10 +1308,10 @@ def fix_date_range_in_sql(sql: str, start_date: str, end_date: str) -> str:
     def replace_between(match):
         current_start, current_end = match.groups()
         # Если конец диапазона неправильный (например, '2025-11-0')
-        if current_end.count('-') == 2 and current_end.endswith('-0'):
+        if current_end.count("-") == 2 and current_end.endswith("-0"):
             return f"between '{start_date}' and '{end_date}'"
         # Если начало диапазона неправильное
-        elif current_start.count('-') == 2 and current_start.endswith('-0'):
+        elif current_start.count("-") == 2 and current_start.endswith("-0"):
             return f"between '{start_date}' and '{end_date}'"
         return match.group(0)
 
@@ -1169,12 +1319,18 @@ def fix_date_range_in_sql(sql: str, start_date: str, end_date: str) -> str:
     return sql
 
 
-@router.message(F.text.startswith('/'))
+@router.message(F.text.startswith("/"))
 async def handle_unknown_command(message: Message):
     """Обработчик неизвестных команд."""
     known_commands = [
-        '/start', '/help', '/stats', '/top_videos',
-        '/top_creators', '/video_info', '/daily_growth', '/debug_june'
+        "/start",
+        "/help",
+        "/stats",
+        "/top_videos",
+        "/top_creators",
+        "/video_info",
+        "/daily_growth",
+        "/debug_june",
     ]
 
     if message.text.split()[0] not in known_commands:

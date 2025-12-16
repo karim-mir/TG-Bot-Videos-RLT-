@@ -63,8 +63,8 @@ class LLMClient:
                 options={
                     "temperature": 0.1,  # СНИЖАЕМ температуру для точности
                     "num_predict": 100,  # Уменьшаем длину ответа
-                    "stop": ["\n", ";", "```", "Вопрос:"]  # Стоп-слова
-                }
+                    "stop": ["\n", ";", "```", "Вопрос:"],  # Стоп-слова
+                },
             )
 
             # Извлекаем SQL
@@ -107,13 +107,15 @@ class LLMClient:
 
     Примеры:
     Вопрос: Какое суммарное количество просмотров набрали все видео, опубликованные в июне 2025 года?
-    SQL: SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;
+    SQL: SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND
+    EXTRACT(MONTH FROM video_created_at) = 6;
 
     Вопрос: Сколько всего замеров статистики с отрицательными просмотрами?
     SQL: SELECT COUNT(*) FROM video_snapshots WHERE delta_views_count < 0;
 
     Вопрос: Сколько видео опубликовал креатор X в период с 1 по 5 ноября?
-    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'X' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '2025-11-01' AND '2025-11-05';
+    SQL: SELECT COUNT(*) FROM videos WHERE creator_id = 'X' AND (video_created_at AT TIME ZONE 'UTC')::date
+    BETWEEN '2025-11-01' AND '2025-11-05';
 
     Вопрос: {user_query}
     SQL:"""
@@ -134,23 +136,23 @@ class LLMClient:
         sql = self._fix_semicolon_in_quotes(sql)
 
         # 3. Добавляем точку с запятой если нет
-        if not sql.endswith(';'):
-            sql += ';'
+        if not sql.endswith(";"):
+            sql += ";"
 
         # 4. Проверяем логику запроса
         sql = self._fix_query_logic(sql, user_query)
 
         # 5. Если SQL слишком длинный или содержит лишнее
-        if '\n' in sql and sql.count('\n') > 3:
-            lines = sql.split('\n')
+        if "\n" in sql and sql.count("\n") > 3:
+            lines = sql.split("\n")
             for line in lines:
-                if line.upper().startswith('SELECT'):
+                if line.upper().startswith("SELECT"):
                     sql = line.strip()
                     break
 
         # 6. Очищаем от комментариев
-        if '--' in sql:
-            sql = sql.split('--')[0].strip()
+        if "--" in sql:
+            sql = sql.split("--")[0].strip()
 
         return sql
 
@@ -161,7 +163,7 @@ class LLMClient:
 
         if single_quotes % 2 != 0:
             # Нечетное количество - добавляем в конец перед точкой с запятой
-            if sql.endswith(';'):
+            if sql.endswith(";"):
                 sql = sql[:-1] + "'" + ";"
             else:
                 sql = sql + "'"
@@ -172,6 +174,7 @@ class LLMClient:
         """Исправляет точку с запятой внутри кавычек."""
         # Ищем паттерн 'YYYY-MM-DD;'
         import re
+
         pattern = r"'(\d{4}-\d{2}-\d{2});'"
         matches = re.findall(pattern, sql)
 
@@ -187,18 +190,26 @@ class LLMClient:
         sql_lower = sql.lower()
 
         # 1. Запросы о суммарных просмотрах ВСЕГДА используют таблицу videos
-        if "суммарное количество просмотров" in query_lower or "сумма просмотров" in query_lower:
+        if (
+            "суммарное количество просмотров" in query_lower
+            or "сумма просмотров" in query_lower
+        ):
             if "video_snapshots" in sql_lower and "delta_views_count" in sql_lower:
                 # Заменяем на правильный запрос
                 if "июне" in query_lower:
-                    return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                    return (
+                        "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+                        "AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                    )
                 elif "ноябре" in query_lower:
-                    return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11;"
+                    return (
+                        "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+                        "AND EXTRACT(MONTH FROM video_created_at) = 11;"
+                    )
                 else:
                     return "SELECT SUM(views_count) FROM videos;"
 
         # 2. Исправляем некорректные даты
-        import re
 
         # Исправляем '2025-06-3' -> '2025-06-30'
         if "'2025-06-3'" in sql:
@@ -208,13 +219,18 @@ class LLMClient:
         # Внимание: для периода 1-5 ноября '2025-11-5' это правильно, не меняем!
 
         # 3. Если в запросе есть "опубликованные в июне/ноябре", используем EXTRACT
-        if any(month in query_lower for month in ["июне", "ноябре", "январе", "феврале"]):
+        if any(
+            month in query_lower for month in ["июне", "ноябре", "январе", "феврале"]
+        ):
             if "between" in sql_lower and "2025" in sql_lower:
                 # Заменяем BETWEEN на EXTRACT для надежности
                 month_map = {"июне": 6, "ноябре": 11, "январе": 1, "феврале": 2}
                 for month_ru, month_num in month_map.items():
                     if month_ru in query_lower:
-                        return f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = {month_num};"
+                        return (
+                            f"SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+                            f"AND EXTRACT(MONTH FROM video_created_at) = {month_num};"
+                        )
 
         return sql
 
@@ -243,7 +259,7 @@ class LLMClient:
         valid_tables = ["VIDEOS", "VIDEO_SNAPSHOTS"]
         from_index = sql_upper.find("FROM")
         if from_index != -1:
-            table_part = sql_upper[from_index + 4:].strip().split()[0]
+            table_part = sql_upper[from_index + 4 :].strip().split()[0]
             if table_part not in valid_tables:
                 logger.warning(f"Неизвестная таблица: {table_part}")
                 return False
@@ -260,23 +276,37 @@ class LLMClient:
         # 1. Сумма просмотров за месяц
         if "суммарное количество просмотров" in query_lower:
             if "июне" in query_lower:
-                return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                return (
+                    "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+                    "AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                )
             elif "ноябре" in query_lower:
-                return "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 11;"
+                return (
+                    "SELECT SUM(views_count) FROM videos WHERE EXTRACT(YEAR FROM video_created_at) = 2025 "
+                    "AND EXTRACT(MONTH FROM video_created_at) = 11;"
+                )
             else:
                 return "SELECT SUM(views_count) FROM videos;"
 
         # 2. Запросы с креатором и датами
-        if creator_id and any(word in query_lower for word in ["опубликовал", "период", "ноября", "июня"]):
+        if creator_id and any(
+            word in query_lower for word in ["опубликовал", "период", "ноября", "июня"]
+        ):
             date_range = self._extract_date_range(query_lower)
             if date_range:
                 date_from, date_to = date_range
-                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '{date_from}' AND '{date_to}';"
+                return (
+                    f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+                    f"AND (video_created_at AT TIME ZONE 'UTC')::date BETWEEN '{date_from}' AND '{date_to}';"
+                )
             elif "июне" in query_lower:
-                return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                return (
+                    f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' "
+                    f"AND EXTRACT(YEAR FROM video_created_at) = 2025 AND EXTRACT(MONTH FROM video_created_at) = 6;"
+                )
 
         # 3. Запросы с условиями по просмотрам
-        if creator_id and any(word in query_lower for word in ['больше', 'набрали']):
+        if creator_id and any(word in query_lower for word in ["больше", "набрали"]):
             number = self._extract_number(query_lower)
             if number:
                 return f"SELECT COUNT(*) FROM videos WHERE creator_id = '{creator_id}' AND views_count > {number};"
@@ -300,7 +330,7 @@ class LLMClient:
         # Убрать import re - он уже в начале файла
 
         # Паттерн для "с 1 ноября 2025 по 5 ноября 2025"
-        pattern = r'с\s+(\d{1,2})\s+(\w+)\s+(\d{4})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+        pattern = r"с\s+(\d{1,2})\s+(\w+)\s+(\d{4})\s+по\s+(\d{1,2})\s+(\w+)\s+(\d{4})"
         match = re.search(pattern, query.lower())
 
         if match:
@@ -308,13 +338,22 @@ class LLMClient:
 
             # Конвертируем русские названия месяцев в числа
             months_ru = {
-                'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
-                'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
-                'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                "января": "01",
+                "февраля": "02",
+                "марта": "03",
+                "апреля": "04",
+                "мая": "05",
+                "июня": "06",
+                "июля": "07",
+                "августа": "08",
+                "сентября": "09",
+                "октября": "10",
+                "ноября": "11",
+                "декабря": "12",
             }
 
-            month1 = months_ru.get(month_ru1, '01')
-            month2 = months_ru.get(month_ru2, '01')
+            month1 = months_ru.get(month_ru1, "01")
+            month2 = months_ru.get(month_ru2, "01")
 
             # Форматируем даты
             date1 = f"{year1}-{month1}-{int(day1):02d}"
@@ -329,19 +368,28 @@ class LLMClient:
         import re
 
         # Паттерн для "28 ноября 2025"
-        pattern = r'(\d{1,2})\s+(\w+)\s+(\d{4})'
+        pattern = r"(\d{1,2})\s+(\w+)\s+(\d{4})"
         match = re.search(pattern, query.lower())
 
         if match:
             day, month_ru, year = match.groups()
 
             months_ru = {
-                'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
-                'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
-                'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                "января": "01",
+                "февраля": "02",
+                "марта": "03",
+                "апреля": "04",
+                "мая": "05",
+                "июня": "06",
+                "июля": "07",
+                "августа": "08",
+                "сентября": "09",
+                "октября": "10",
+                "ноября": "11",
+                "декабря": "12",
             }
 
-            month = months_ru.get(month_ru, '01')
+            month = months_ru.get(month_ru, "01")
 
             return f"{year}-{month}-{int(day):02d}"
 
@@ -351,10 +399,10 @@ class LLMClient:
         """Извлекает SQL запрос из ответа модели."""
         try:
             # Получаем текст ответа из объекта
-            if hasattr(response, 'response'):
+            if hasattr(response, "response"):
                 response_text = response.response
-            elif isinstance(response, dict) and 'response' in response:
-                response_text = response['response']
+            elif isinstance(response, dict) and "response" in response:
+                response_text = response["response"]
             elif isinstance(response, str):
                 response_text = response
             else:
@@ -367,23 +415,23 @@ class LLMClient:
             response_text = response_text.strip()
 
             # Удаляем маркеры кодовых блоков
-            if '```sql' in response_text:
-                response_text = response_text.split('```sql')[1].split('```')[0].strip()
-            elif '```' in response_text:
-                response_text = response_text.split('```')[1].split('```')[0].strip()
+            if "```sql" in response_text:
+                response_text = response_text.split("```sql")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
 
             # Удаляем возможные префиксы типа "SQL:" или "Запрос:"
-            prefixes = ['SQL:', 'Query:', 'Запрос:', 'Ответ:']
+            prefixes = ["SQL:", "Query:", "Запрос:", "Ответ:"]
             for prefix in prefixes:
                 if response_text.startswith(prefix):
-                    response_text = response_text[len(prefix):].strip()
+                    response_text = response_text[len(prefix) :].strip()
 
             # Удаляем кавычки если есть
-            response_text = response_text.strip('"\'')
+            response_text = response_text.strip("\"'")
 
             # ВАЖНО: Добавляем точку с запятой если её нет
-            if not response_text.endswith(';'):
-                response_text += ';'
+            if not response_text.endswith(";"):
+                response_text += ";"
 
             # Проверяем баланс кавычек
             if response_text.count("'") % 2 != 0:
@@ -409,12 +457,12 @@ class LLMClient:
         text_upper = text.upper().strip()
 
         # Должен начинаться с SQL команды
-        sql_keywords = ['SELECT', 'WITH', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX']
+        sql_keywords = ["SELECT", "WITH", "COUNT", "SUM", "AVG", "MIN", "MAX"]
         if not any(text_upper.startswith(kw) for kw in sql_keywords):
             return False
 
         # Не должен содержать опасных команд
-        dangerous = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'TRUNCATE']
+        dangerous = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE"]
         if any(cmd in text_upper for cmd in dangerous):
             return False
 
@@ -423,19 +471,19 @@ class LLMClient:
     def _extract_creator_id(self, query_lower: str) -> str:
         """Извлекает ID креатора из запроса."""
         # Ищем UUID (с дефисами)
-        uuid_pattern = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+        uuid_pattern = r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
         uuid_match = re.search(uuid_pattern, query_lower)
         if uuid_match:
             return uuid_match.group(0)
 
         # Ищем короткий ID (32 символа без дефисов)
-        short_id_pattern = r'[a-f0-9]{32}'
+        short_id_pattern = r"[a-f0-9]{32}"
         short_id_match = re.search(short_id_pattern, query_lower)
         if short_id_match:
             return short_id_match.group(0)
 
         # Ищем после "id "
-        id_match = re.search(r'id\s+([a-f0-9\-]+)', query_lower)
+        id_match = re.search(r"id\s+([a-f0-9\-]+)", query_lower)
         if id_match:
             return id_match.group(1)
 
@@ -444,29 +492,29 @@ class LLMClient:
     def _extract_number(self, query_lower: str) -> str:
         """Извлекает число из запроса, включая числа с пробелами."""
         # Сначала пробуем найти числа с пробелами (10 000, 100 000)
-        spaced_numbers = re.findall(r'(\d[\d\s]*\d)', query_lower.replace(',', ''))
+        spaced_numbers = re.findall(r"(\d[\d\s]*\d)", query_lower.replace(",", ""))
         if spaced_numbers:
             # Берем последнее число и убираем пробелы
-            num = spaced_numbers[-1].replace(' ', '')
+            num = spaced_numbers[-1].replace(" ", "")
             return num
 
         # Затем ищем обычные числа
-        numbers = re.findall(r'\d+', query_lower.replace(' ', ''))
+        numbers = re.findall(r"\d+", query_lower.replace(" ", ""))
         if numbers:
             return numbers[-1]
 
         # Числа словами
         word_numbers = {
-            'десять': '10',
-            'сто': '100',
-            'тысяч': '1000',
-            'тысяча': '1000',
-            'десять тысяч': '10000',
-            '10 тысяч': '10000',
-            'сто тысяч': '100000',
-            '100 тысяч': '100000',
-            'миллион': '1000000',
-            'миллиона': '1000000'
+            "десять": "10",
+            "сто": "100",
+            "тысяч": "1000",
+            "тысяча": "1000",
+            "десять тысяч": "10000",
+            "10 тысяч": "10000",
+            "сто тысяч": "100000",
+            "100 тысяч": "100000",
+            "миллион": "1000000",
+            "миллиона": "1000000",
         }
 
         for word, num in word_numbers.items():

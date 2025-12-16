@@ -1,18 +1,36 @@
 # Telegram-бот для работы с видео-данными
 ## Описание проекта
-### Telegram-бот, который принимает текстовые запросы пользователей, преобразует их в структурированные SQL-запросы или код для работы с базой данных видео-контента, используя LLM (Large Language Model) для понимания естественного языка.
+Telegram-бот для анализа статистики видео-контента. Бот принимает текстовые запросы на естественном языке, преобразует их в SQL-запросы к базе данных и возвращает результаты. Использует LLM (Ollama) для понимания естественного языка и преобразования запросов в структурированные SQL-команды.
 
-#### Архитектура проекта
+### Ключевые возможности:
+- 📊 Анализ статистики видео (просмотры, лайки, комментарии)
+- 📈 Отслеживание роста просмотров по времени
+- 🔍 Поиск и фильтрация видео по различным критериям
+- 🏆 Рейтинги и топ-листы
+- 🕐 Корректная обработка временных зон (UTC)
 
-```project/
-├── data/              # Данные проекта (конфигурация, JSON-файлы)
-├── scripts/           # Вспомогательные скрипты
-├── src/               # Исходный код приложения
-│   ├── bot/           # Telegram-бот
-│   ├── core/          # Ядро приложения (БД, LLM-клиент)
-│   └── utils/         # Вспомогательные утилиты
-├── tests/             # Тесты
-└── ... конфигурационные файлы
+## Архитектура проекта
+
+```
+├── data/ # Данные проекта (конфигурация, JSON-файлы)
+├── scripts/ # Вспомогательные скрипты
+├── src/ # Исходный код приложения
+│ ├── bot/ # Telegram-бот
+│ │ ├── main.py # Запуск бота
+│ │ └── handlers.py # Обработчики команд и сообщений
+│ ├── core/ # Ядро приложения
+│ │ ├── database.py # Работа с базой данных
+│ │ └── llm_client.py # Клиент для работы с LLM (Ollama)
+│ │ 
+│ └── utils/ # Вспомогательные утилиты
+│ └── config.py # Конфигурация приложения
+│ 
+├── tests/ # Тесты
+├── docker-compose.yml # Docker Compose конфигурация
+├── Dockerfile # Docker конфигурация для бота
+├── pyproject.toml # Зависимости Python
+├── .env.example # Шаблон переменных окружения
+└── README.md # Документация
 ```
 #### Подход к преобразованию текстовых запросов
 
@@ -29,23 +47,40 @@
 
 Примеры таблиц и полей:
 ```
-{
-  "videos": {
-    "id": "integer",
-    "title": "string",
-    "description": "text",
-    "duration_seconds": "integer",
-    "upload_date": "datetime",
-    "category": "string",
-    "views": "integer",
-    "likes": "integer"
-  },
-  "users": {
-    "id": "integer",
-    "username": "string",
-    "subscription_level": "string"
-  }
-}
+-- Таблица видео
+CREATE TABLE videos (
+    id UUID PRIMARY KEY,
+    creator_id VARCHAR(255) NOT NULL,
+    video_created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    views_count INTEGER DEFAULT 0,
+    likes_count INTEGER DEFAULT 0,
+    reports_count INTEGER DEFAULT 0,
+    comments_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Таблица снимков статистики (snapshots)
+CREATE TABLE video_snapshots (
+    id UUID PRIMARY KEY,
+    video_id UUID REFERENCES videos(id) ON DELETE CASCADE,
+    views_count INTEGER DEFAULT 0,
+    likes_count INTEGER DEFAULT 0,
+    reports_count INTEGER DEFAULT 0,
+    comments_count INTEGER DEFAULT 0,
+    delta_views_count INTEGER DEFAULT 0,
+    delta_likes_count INTEGER DEFAULT 0,
+    delta_reports_count INTEGER DEFAULT 0,
+    delta_comments_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Индексы для ускорения запросов
+CREATE INDEX idx_videos_creator_id ON videos(creator_id);
+CREATE INDEX idx_videos_created_at ON videos(video_created_at);
+CREATE INDEX idx_snapshots_video_id ON video_snapshots(video_id);
+CREATE INDEX idx_snapshots_created_at ON video_snapshots(created_at);
 ```
 Промпт-шаблон:
 
