@@ -1,0 +1,52 @@
+services:
+  bot:
+    build: .
+    container_name: telegram_video_bot
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DATABASE_URL=sqlite:///app/data/videos.db
+      - LLM_BASE_URL=http://ollama:11434
+      - LLM_MODEL=gemma3:4b
+      - LLM_TEMPERATURE=0.1
+      - PYTHONPATH=/app
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    command: >
+      sh -c "
+      echo 'Ожидание запуска Ollama...' &&
+      sleep 30 &&
+      echo 'Проверка данных...' &&
+      python scripts/check_data.py &&
+      echo 'Загрузка данных...' &&
+      python scripts/load_data.py &&
+      echo 'Запуск бота...' &&
+      python src/bot/main.py
+      "
+    networks:
+      - bot-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_gemma
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+    command: serve
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  ollama_data:
