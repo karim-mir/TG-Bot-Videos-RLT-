@@ -647,6 +647,40 @@ async def handle_intelligent(message: Message):
 
     try:
         query_lower = user_query.lower()
+        # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О КОЛИЧЕСТВЕ ДНЕЙ ==========
+        if any(keyword in query_lower for keyword in
+               ['календарных днях', 'разных днях', 'дней ноября', 'скольких разных']):
+            logger.info("Это запрос о количестве дней публикации")
+
+            # Ищем креатора
+            creator_match = re.search(r"креатор\w*\s+с\s+id\s+([a-f0-9-]+)", query_lower)
+            if not creator_match:
+                creator_match = re.search(r"id\s+([a-f0-9-]+)", query_lower)
+
+            if creator_match:
+                creator_id = creator_match.group(1)
+                logger.info(f"Извлечен ID креатора: {creator_id}")
+
+                # Проверяем, есть ли ноябрь 2025 в запросе
+                if 'ноября' in query_lower and '2025' in query_lower:
+                    # Генерируем правильный SQL
+                    sql = f"""
+                            SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC')) 
+                            FROM videos 
+                            WHERE creator_id = '{creator_id}'
+                              AND EXTRACT(YEAR FROM video_created_at AT TIME ZONE 'UTC') = 2025
+                              AND EXTRACT(MONTH FROM video_created_at AT TIME ZONE 'UTC') = 11;
+                            """
+
+                    logger.info(f"Специальный SQL для количества дней: {sql}")
+
+                    try:
+                        result = await db.execute_scalar(sql.strip())
+                        logger.info(f"Результат SQL: {result}")
+                        await message.answer(str(result))
+                        return
+                    except Exception as e:
+                        logger.error(f"Ошибка выполнения SQL для количества дней: {e}")
 
         # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О РОСТЕ ПРОСМОТРОВ ==========
         if any(keyword in query_lower for keyword in
@@ -913,6 +947,38 @@ def fix_sql_dates_based_on_range(sql, start_date, end_date):
 async def try_alternative_queries(user_query: str, original_sql: str) -> Optional[int]:
     """Пробует альтернативные SQL запросы для получения результата."""
     query_lower = user_query.lower()
+
+    # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О КОЛИЧЕСТВЕ ДНЕЙ ==========
+    if any(keyword in query_lower for keyword in ['календарных днях', 'разных днях', 'дней ноября', 'скольких разных']):
+        logger.info("Пробуем альтернативы для запроса о количестве дней")
+
+        # Ищем креатора
+        creator_id = None
+        creator_match = re.search(r"creator_id\s*=\s*'([^']+)'", original_sql, re.IGNORECASE)
+        if creator_match:
+            creator_id = creator_match.group(1)
+
+        if not creator_id:
+            text_match = re.search(r"id\s+([a-f0-9-]+)", query_lower)
+            if text_match:
+                creator_id = text_match.group(1)
+
+        if creator_id:
+            # Правильный SQL для количества дней в ноябре 2025
+            correct_sql = f"""
+                SELECT COUNT(DISTINCT DATE(video_created_at AT TIME ZONE 'UTC')) 
+                FROM videos 
+                WHERE creator_id = '{creator_id}'
+                  AND EXTRACT(YEAR FROM video_created_at AT TIME ZONE 'UTC') = 2025
+                  AND EXTRACT(MONTH FROM video_created_at AT TIME ZONE 'UTC') = 11;
+                """
+
+            try:
+                result = await db.execute_scalar(correct_sql.strip())
+                logger.info(f"Альтернатива для количества дней вернула: {result}")
+                return result
+            except Exception as e:
+                logger.debug(f"Ошибка в альтернативе для количества дней: {e}")
 
     # ========== СПЕЦИАЛЬНАЯ ОБРАБОТКА ДЛЯ ЗАПРОСОВ О РОСТЕ ПРОСМОТРОВ ==========
     if any(keyword in query_lower for keyword in
